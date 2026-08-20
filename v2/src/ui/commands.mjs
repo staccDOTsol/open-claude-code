@@ -98,18 +98,17 @@ export const COMMANDS = {
         handler(args, state) {
             const checks = [];
             checks.push(`Node.js: ${process.version}`);
-            checks.push(`ANTHROPIC_API_KEY: ${process.env.ANTHROPIC_API_KEY ? 'set' : 'NOT SET'}`);
+            checks.push(`openzoo-claude: 2.0.0`);
+            checks.push(`ANTHROPIC_BASE_URL: ${process.env.ANTHROPIC_BASE_URL || 'http://localhost:8402/v1'}`);
+            checks.push(`ANTHROPIC_API_KEY: ${process.env.ANTHROPIC_API_KEY ? 'SET (unset this — it bills api.anthropic.com)' : 'unset (good)'}`);
+            checks.push(`ANTHROPIC_AUTH_TOKEN: ${process.env.ANTHROPIC_AUTH_TOKEN ? 'set' : 'NOT SET'}`);
             checks.push(`Model: ${state.model || 'default'}`);
             checks.push(`Tools: ${state.tools?.list?.()?.length || 0}`);
             checks.push(`Messages: ${state.messages.length}`);
             checks.push(`CWD: ${process.cwd()}`);
             checks.push(`Platform: ${process.platform}`);
 
-            // Check API connectivity
-            let apiStatus = 'unchecked';
-            if (process.env.ANTHROPIC_API_KEY) {
-                apiStatus = 'key present';
-            }
+            let apiStatus = 'OpenZoo sidecar / subscription Bearer';
             checks.push(`API: ${apiStatus}`);
 
             // Check MCP servers
@@ -133,13 +132,32 @@ export const COMMANDS = {
     },
 
     '/model': {
-        description: 'Show or switch model',
+        description: 'Show or switch model (zoo catalog)',
         handler(args, state) {
-            if (args) {
-                state.model = args;
-                return `Model switched to: ${args}`;
+            const catalog = state?._zooCatalog || [];
+            if (args && args !== 'list') {
+                const id = String(args).trim();
+                const auto = !id || id.toLowerCase() === 'auto' || id === 'openzoo/auto';
+                if (auto) {
+                    const pick = catalog.find(m => /sonnet|fable/i.test(m) && !/opus/i.test(m)) || catalog[0];
+                    if (pick) {
+                        state.model = pick;
+                        return `Auto resolved to: ${pick}`;
+                    }
+                    return 'No zoo catalog yet — start the sidecar on :8402 and retry /model.';
+                }
+                state.model = id;
+                return `Model switched to: ${id}`;
             }
-            return `Current model: ${state.model || 'default'}`;
+            const lines = [`Current model: ${state.model || 'default'}`];
+            if (catalog.length) {
+                lines.push(`Zoo catalog (${catalog.length}):`);
+                for (const id of catalog.slice(0, 80)) lines.push(`  ${id}`);
+                if (catalog.length > 80) lines.push(`  … ${catalog.length - 80} more`);
+            } else {
+                lines.push('Zoo catalog unavailable (is :8402 up?).');
+            }
+            return lines.join('\n');
         },
     },
 

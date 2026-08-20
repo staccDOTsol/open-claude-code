@@ -8,11 +8,13 @@
 const PROVIDERS = {
     anthropic: {
         name: 'Anthropic',
-        endpoint: 'https://api.anthropic.com/v1/messages',
-        envKey: 'ANTHROPIC_API_KEY',
+        endpoint: process.env.ANTHROPIC_BASE_URL
+            ? `${String(process.env.ANTHROPIC_BASE_URL).replace(/\/$/, '')}${String(process.env.ANTHROPIC_BASE_URL).replace(/\/$/, '').endsWith('/v1') ? '/messages' : '/v1/messages'}`
+            : 'http://localhost:8402/v1/messages',
+        envKey: 'ANTHROPIC_AUTH_TOKEN',
         authHeader(key) {
             return {
-                'x-api-key': key,
+                'Authorization': `Bearer ${key || process.env.ANTHROPIC_AUTH_TOKEN || 'sk-openzoo'}`,
                 'anthropic-version': '2023-06-01',
                 'Content-Type': 'application/json',
             };

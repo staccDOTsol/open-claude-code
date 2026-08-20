@@ -52,7 +52,7 @@ function formatCost(cost) {
 
 // ---- Status Bar ----
 
-export function StatusBar({ model, tokens, cost, mode, startTime, contextMax }) {
+export function StatusBar({ model, tokens, cost, mode, startTime, contextMax, spillLabel }) {
     const [elapsed, setElapsed] = useState(0);
 
     useEffect(() => {
@@ -69,7 +69,7 @@ export function StatusBar({ model, tokens, cost, mode, startTime, contextMax }) 
 
     return h(Box, null,
         h(Text, { color: 'cyan', bold: true }, '\u258A '),
-        h(Text, { color: 'white' }, 'open-claude-code'),
+        h(Text, { color: 'white' }, 'openzoo-claude'),
         h(Text, { color: 'gray' }, ' \u2502 '),
         h(Text, { color: 'green' }, model || 'default'),
         h(Text, { color: 'gray' }, ' \u2502 '),
@@ -77,7 +77,7 @@ export function StatusBar({ model, tokens, cost, mode, startTime, contextMax }) 
         h(Text, { color: 'gray' }, ' \u2502 '),
         h(Text, { color: ctxColor }, '\u25CF ', contextPct, '% ctx'),
         h(Text, { color: 'gray' }, ' \u2502 '),
-        h(Text, { color: 'white' }, formatCost(cost || 0)),
+        h(Text, { color: 'white' }, spillLabel || formatCost(cost || 0)),
         h(Text, { color: 'gray' }, ' \u2502 '),
         h(Text, { color: 'magenta' }, mode || 'default'),
     );
@@ -88,7 +88,7 @@ export function StatusBar({ model, tokens, cost, mode, startTime, contextMax }) 
 export function Message({ role, content, toolName, toolResult, toolStatus, thinking }) {
     if (role === 'assistant') return h(AssistantMessage, { content });
     if (role === 'tool') return h(ToolMessage, { name: toolName, result: toolResult, status: toolStatus });
-    if (role === 'thinking') return h(ThinkingMessage, { content: thinking });
+    if (role === 'thinking') return h(ThinkingMessage, { content: thinking, expanded: process.env.SHOW_THINKING === '1' });
     if (role === 'user') return h(UserMessage, { content });
     if (role === 'error') return h(ErrorMessage, { content });
     if (role === 'system') return h(SystemMessage, { content });
@@ -138,8 +138,17 @@ export function ToolMessage({ name, result, status }) {
     return h(Box, null, ...children);
 }
 
-export function ThinkingMessage({ content }) {
-    if (!content) return null;
+export function ThinkingMessage({ content, expanded }) {
+    if (!content && !expanded) {
+        return h(Box, null,
+            h(Text, { dimColor: true, italic: true }, 'thinking…'),
+        );
+    }
+    if (!expanded) {
+        return h(Box, null,
+            h(Text, { dimColor: true, italic: true }, 'thinking… (folded — SHOW_THINKING=1 to expand)'),
+        );
+    }
     return h(Box, null,
         h(Text, { dimColor: true, italic: true }, '\uD83D\uDCAD ', truncate(content, 500)),
     );
@@ -212,7 +221,7 @@ export function LoadingIndicator({ tool }) {
 
 export function WelcomeBanner({ model, toolCount }) {
     return h(Box, { flexDirection: 'column', marginBottom: 1 },
-        h(Text, { bold: true }, 'open-claude-code v2'),
+        h(Text, { bold: true }, 'openzoo-claude'),
         h(Text, { dimColor: true }, 'Model: ', model || 'default', ' | Tools: ', toolCount || 0),
         h(Text, { dimColor: true }, 'Type your prompt or /help. Press Ctrl+C to exit.'),
     );

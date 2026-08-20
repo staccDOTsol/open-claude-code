@@ -1,24 +1,12 @@
 #!/usr/bin/env node
 /**
- * open-claude-code v2
+ * openzoo-claude — OpenZoo Claude Code CLI
  *
- * Open source implementation of Claude Code CLI architecture.
- * Based on ruDevolution decompilation of Claude Code v2.1.91.
+ * Pay-per-call via the local OpenZoo sidecar (:8402). Subscription Bearer
+ * or x402. Never ANTHROPIC_API_KEY. Never api.anthropic.com.
  *
- * Architecture mirrors the actual Claude Code internals:
- * - Async generator agent loop (13 event types)
- * - 25+ tools with validateInput/call interface
- * - MCP client (stdio/SSE/WS/sHTTP transports)
- * - 6 permission modes + sandbox
- * - Context compaction + auto-compaction
- * - Hooks system (7 events)
- * - Settings chain (5 layers, 76 properties)
- * - Multi-provider support (Anthropic, OpenAI, Google)
- * - Custom agents and skills
- * - Session management and checkpoints
- * - Prompt caching
- * - 39 slash commands
- * - Telemetry stub
+ * Also works under ELECTRON_RUN_AS_NODE=1 + Electron execPath + this .mjs
+ * (Finder-launched grokui has no nvm `node` on PATH).
  */
 
 import { createAgentLoop } from './core/agent-loop.mjs';
@@ -35,6 +23,22 @@ import { CheckpointManager } from './core/checkpoints.mjs';
 import { PromptCache } from './core/cache.mjs';
 import { readEnv } from './config/env.mjs';
 import * as telemetry from './telemetry/index.mjs';
+import {
+    detectAndApplyZooEnv,
+    fetchZooModels,
+    isAutoModel,
+    resolveApiModel,
+} from './core/openzoo.mjs';
+import { sanitizeAssistantCanvas } from './core/savings.mjs';
+import {
+    assistantMessage,
+    emitNdjson,
+    newSessionId,
+    resultSuccess,
+    streamEventWrap,
+    systemInit,
+    userToolResult,
+} from './core/stream-json.mjs';
 
 async function main() {
     const rawArgv = process.argv.slice(2);
@@ -56,11 +60,16 @@ async function main() {
         process.exit(code);
     }
 
+    // Apply zoo env when :8402 /v1/info answers so `claude`/`occ` work
+    // without the openzoo wrapper. Payment is not a boot gate.
+    const zoo = await detectAndApplyZooEnv(process.env);
+    delete process.env.ANTHROPIC_API_KEY;
+
     const args = parseArgs(rawArgv);
 
     // Handle --version
     if (args.showVersion) {
-        console.log('open-claude-code v2.0.0-alpha.1');
+        console.log('openzoo-claude 2.0.0');
         process.exit(0);
     }
 
@@ -75,11 +84,20 @@ async function main() {
 
     // Apply CLI overrides to settings
     if (args.permissionMode) settings.permissions = { ...settings.permissions, defaultMode: args.permissionMode };
+    else if (zoo.zoo && !args.permissionMode) {
+        settings.permissions = { ...settings.permissions, defaultMode: process.env.CLAUDE_CODE_PERMISSION_MODE || 'bypassPermissions' };
+    }
     if (args.systemPrompt) settings.systemPromptOverride = args.systemPrompt;
     if (args.addDirs?.length) settings.addDirs = args.addDirs;
     if (args.maxTurns) settings.maxTurns = args.maxTurns;
     if (args.verbose) settings.verbose = true;
     if (args.debug) settings.debug = true;
+
+    if (args.print && !args.prompt && !process.stdin.isTTY) {
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        args.prompt = Buffer.concat(chunks).toString('utf8').trim() || args.prompt;
+    }
 
     const tools = createToolRegistry();
     const permissions = createPermissionChecker(settings.permissions);
@@ -142,13 +160,20 @@ async function main() {
         }
     }
 
+    let model = args.model || settings.model || process.env.ANTHROPIC_MODEL || '';
+    const catalog = await fetchZooModels();
+    if (isAutoModel(model) || model === 'openzoo/auto') {
+        model = await resolveApiModel(model, { catalog });
+    }
+
     const loop = createAgentLoop({
-        model: args.model || settings.model || 'claude-sonnet-4-6',
+        model,
         tools,
         permissions,
         settings,
         hooks,
         cascade,
+        sessionManager,
     });
 
     // Attach extra state for commands to access
@@ -160,6 +185,7 @@ async function main() {
     loop.state._sessionManager = sessionManager;
     loop.state._checkpointManager = checkpointManager;
     loop.state._promptCache = promptCache;
+    loop.state._zooCatalog = catalog;
 
     telemetry.track('session.start', { model: loop.state.model });
 
@@ -176,23 +202,36 @@ async function main() {
     process.on('SIGINT', async () => { await cleanup(); process.exit(0); });
     process.on('SIGTERM', async () => { await cleanup(); process.exit(0); });
 
-    if (args.prompt) {
+    if (args.prompt || args.print) {
         // Non-interactive: run prompt and exit (no Ink — plain stdout)
         const outputFormat = args.outputFormat || 'text';
         const results = [];
+        const sessionId = sessionManager.sessionId || newSessionId();
+        const started = Date.now();
+        if (outputFormat === 'stream-json') {
+            console.log(emitNdjson(systemInit({
+                sessionId,
+                model: loop.state.model,
+                tools: tools.list(),
+                permissionMode: loop.state._permissionMode,
+            })));
+        }
 
-        for await (const event of loop.run(args.prompt)) {
-            if (outputFormat === 'json') {
-                results.push(event);
-            } else if (outputFormat === 'stream-json') {
-                console.log(JSON.stringify(event));
-            } else {
+        const assistantBits = [];
+        for await (const event of loop.run(args.prompt || '')) {
+            results.push(event);
+            if (outputFormat === 'stream-json') {
+                writeOfficialStreamJson(event, {
+                    sessionId,
+                    model: loop.state.model,
+                    assistantBits,
+                });
+            } else if (outputFormat !== 'json') {
                 handleEvent(event, settings);
             }
         }
 
         if (outputFormat === 'json') {
-            // Extract final text
             const texts = results
                 .filter(e => e.type === 'assistant')
                 .map(e => e.content)
@@ -202,6 +241,16 @@ async function main() {
                 usage: loop.state.tokenUsage,
                 model: loop.state.model,
             }));
+        } else if (outputFormat === 'stream-json') {
+            const lastErr = results.find(e => e.type === 'error') || null;
+            console.log(emitNdjson(resultSuccess({
+                sessionId,
+                result: assistantBits.join('') || (lastErr?.message || ''),
+                usage: loop.state.tokenUsage,
+                durationMs: Date.now() - started,
+                numTurns: loop.state.turnCount,
+                isError: Boolean(lastErr),
+            })));
         } else {
             console.log('');
         }
@@ -227,21 +276,70 @@ async function main() {
     }
 }
 
+function writeOfficialStreamJson(event, { sessionId, model, assistantBits }) {
+    switch (event.type) {
+        case 'stream_event':
+            if (event.text) {
+                assistantBits.push(event.text);
+                console.log(emitNdjson(streamEventWrap({
+                    type: 'content_block_delta',
+                    delta: { type: 'text_delta', text: event.text },
+                }, sessionId)));
+            }
+            break;
+        case 'thinking':
+            console.log(emitNdjson(streamEventWrap({
+                type: 'content_block_delta',
+                delta: { type: 'thinking_delta', thinking: event.text || '' },
+            }, sessionId)));
+            break;
+        case 'assistant':
+            if (event.content) {
+                const text = sanitizeAssistantCanvas(event.content);
+                if (text && !assistantBits.includes(text)) assistantBits.push(text);
+                console.log(emitNdjson(assistantMessage({
+                    sessionId,
+                    model,
+                    content: [{ type: 'text', text: text || event.content }],
+                })));
+            }
+            break;
+        case 'result':
+            if (event.tool && event.result != null) {
+                console.log(emitNdjson(userToolResult({
+                    sessionId,
+                    toolResults: [{
+                        type: 'tool_result',
+                        tool_use_id: event.tool_use_id || event.tool,
+                        content: typeof event.result === 'string' ? event.result : JSON.stringify(event.result),
+                    }],
+                })));
+            }
+            break;
+        case 'error':
+            break;
+        default:
+            break;
+    }
+}
+
 function handleEvent(event, settings = {}) {
     switch (event.type) {
         case 'stream_request_start':
             break;
         case 'stream_event':
-            process.stdout.write(event.text || '');
+            process.stdout.write(sanitizeAssistantCanvas(event.text || ''));
             break;
         case 'thinking':
-            if (process.env.SHOW_THINKING || settings.verbose) {
+            if (process.env.SHOW_THINKING || settings.verbose || settings.showThinking) {
                 process.stdout.write(`\x1b[2m${event.text}\x1b[0m`);
             }
             break;
-        case 'assistant':
-            if (!event._streamed && event.content) console.log(event.content);
+        case 'assistant': {
+            const text = sanitizeAssistantCanvas(event.content);
+            if (!event._streamed && text) console.log(text);
             break;
+        }
         case 'tool_progress':
             process.stderr.write(`\x1b[33m[${event.tool}]\x1b[0m running...\n`);
             break;

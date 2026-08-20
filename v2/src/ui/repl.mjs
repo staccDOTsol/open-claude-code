@@ -8,6 +8,7 @@
 import readline from 'readline';
 import { executeCommand, getCompletions, COMMANDS } from './commands.mjs';
 import { Spinner, highlightCode, renderStatusBar, renderToolProgress } from './ink-app.mjs';
+import { sanitizeAssistantCanvas } from '../core/savings.mjs';
 
 /**
  * Start the interactive REPL.
@@ -28,8 +29,11 @@ export async function startRepl(loop, settings) {
         },
     });
 
-    console.log('\x1b[1mopen-claude-code v2\x1b[0m — type your prompt or /help');
-    console.log('\x1b[2mModel: %s | Tools: %d\x1b[0m', loop.state.model || 'default', loop.state.tools?.list?.()?.length || 0);
+    console.log('\x1b[1mopenzoo-claude\x1b[0m — type your prompt or /help');
+    console.log('\x1b[2mModel: %s | Tools: %d | BASE_URL: %s\x1b[0m', loop.state.model || 'default', loop.state.tools?.list?.()?.length || 0, process.env.ANTHROPIC_BASE_URL || 'http://localhost:8402/v1');
+    if (!process.env.ANTHROPIC_API_KEY) {
+        console.log('\x1b[2mANTHROPIC_API_KEY unset — no api.anthropic.com billing\x1b[0m');
+    }
     console.log('');
 
     const askPrompt = () => {
@@ -124,7 +128,8 @@ function renderEvent(event) {
             break;
         case 'assistant':
             if (event.content) {
-                process.stdout.write(highlightCode(event.content));
+                const text = sanitizeAssistantCanvas(event.content);
+                if (text) process.stdout.write(highlightCode(text));
             }
             break;
         case 'compaction':

@@ -1,5 +1,5 @@
-<h1 align="center">Open Claude Code</h1>
-<h3 align="center">Open Source Claude Code CLI — Reverse Engineered & Rebuilt</h3>
+<h1 align="center">openzoo-claude</h1>
+<h3 align="center">OpenZoo Claude Code CLI — pay-per-call, no Anthropic API key</h3>
 
 <p align="center">
   <em>A fully functional open source implementation of Anthropic's Claude Code CLI,<br/>
@@ -10,7 +10,7 @@
   <img alt="Tests" src="https://img.shields.io/badge/tests-991_passing-brightgreen?style=flat-square" />
   <img alt="Tools" src="https://img.shields.io/badge/tools-25-blue?style=flat-square" />
   <img alt="Commands" src="https://img.shields.io/badge/commands-40-blue?style=flat-square" />
-  <img alt="npm" src="https://img.shields.io/npm/v/@ruvnet/open-claude-code?style=flat-square&label=npm" />
+  <img alt="npm" src="https://img.shields.io/npm/v/openzoo-claude?style=flat-square&label=npm" />
   <img alt="License" src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" />
   <img alt="Nightly" src="https://img.shields.io/badge/nightly-verified_releases-brightgreen?style=flat-square" />
 </p>
@@ -21,23 +21,48 @@
 
 ## ⚡ Quick Start
 
+This repo **is** the product. `claude` / `occ` / `openzoo-claude` are this CLI — not Anthropic's bun binary, not a wrapper around official `claude`.
+
 ```bash
-# Run instantly (no install)
-npx @ruvnet/open-claude-code "explain this codebase"
+# From this repo (Silicon / local)
+npm i -g .
 
-# Or install globally
-npm install -g @ruvnet/open-claude-code
-occ "hello"
+# or from npm once published
+npm i -g openzoo-claude
 
-# Interactive mode
-occ
+# Sidecar must be healthy first
+# (npx openzoo in another terminal — public door https://openzoo.fun)
+
+occ -p hi
+claude -p hi
 ```
 
-**Requires:** `ANTHROPIC_API_KEY` environment variable set.
+**Pay lanes (never `ANTHROPIC_API_KEY`):**
+
+1. Stripe subscription key in `~/.openzoo/subscription.json` (or `OPENZOO_SUBSCRIPTION_KEY`) → `Authorization: Bearer <key>`. Billing: https://zoo.openzoo.fun
+2. Else x402 via the local sidecar on `:8402`. Empty wallet is a pay wall, not a retry.
+
+When `:8402/v1/info` answers, this CLI applies the zoo env itself:
+
+```
+ANTHROPIC_BASE_URL=http://localhost:8402/v1
+ANTHROPIC_AUTH_TOKEN=<subscription key or sk-openzoo>
+ANTHROPIC_API_KEY   unset
+DISABLE_COMPACT=1
+DISABLE_AUTO_COMPACT=1
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
+```
+
+`sk-openzoo` is a dummy gateway token for the local proxy — not an Anthropic key.
+
+If an official Anthropic `claude` binary is also installed, keep it as `claude-anthropic`. A global install of **this** package is what `claude` becomes.
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-npx @ruvnet/open-claude-code "what files are in this directory?"
+# Documented recipe (API key must stay unset)
+unset ANTHROPIC_API_KEY
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8402/v1
+export ANTHROPIC_AUTH_TOKEN=sk-openzoo   # or your subscription key
+occ -p "hi"
 ```
 
 ---
@@ -54,27 +79,14 @@ It's not a copy — it's a clean-room implementation that mirrors the actual Cla
 
 ## 📦 Installation
 
-### npx (no install needed)
-
 ```bash
-npx @ruvnet/open-claude-code "your prompt here"
+git clone https://github.com/staccDOTsol/open-claude-code.git
+cd open-claude-code
+npm i -g .
+# bins: openzoo-claude, occ, claude
 ```
 
-### Global install
-
-```bash
-npm install -g @ruvnet/open-claude-code
-occ "your prompt here"
-```
-
-### From source
-
-```bash
-git clone https://github.com/ruvnet/open-claude-code.git
-cd open-claude-code/v2
-export ANTHROPIC_API_KEY=sk-ant-...
-node src/index.mjs "hello"
-```
+Or `npm i -g openzoo-claude` after publish. The `openzoo` package's `claude` subcommand only installs (if missing) and execs this package.
 
 ---
 
@@ -108,8 +120,8 @@ occ
 occ [options] [prompt]
 
 Options:
-  -m, --model <model>          Model to use (default: claude-sonnet-4-6)
-  -p, --print                  Print mode (non-interactive, output only)
+  -m, --model <model>          Model to use (never pass openzoo/auto)
+  -p, --print                  Print mode (boolean). Prompt is positional.
   --permission-mode <mode>     Permission mode: default, auto, plan, acceptEdits, 
                                bypassPermissions, dontAsk
   --system-prompt <text>       Override system prompt
@@ -130,8 +142,9 @@ Options:
 # Use a different model
 occ -m claude-opus-4-6 "design a database schema for a blog"
 
-# Print mode (for piping)
+# Print mode (boolean -p; prompt is positional — official Claude shape)
 occ -p "list all functions in src/" > functions.txt
+occ --print --output-format stream-json "hello"
 
 # Plan mode (read-only, no edits)
 occ --permission-mode plan "review the security of auth.js"

@@ -9,6 +9,7 @@
  * - ANSI code stripping by default
  */
 import { spawn } from 'child_process';
+import { rejectHarnessBash, rewriteFindCommand } from '../core/savings.mjs';
 
 // Strip ANSI escape sequences
 function stripAnsi(str) {
@@ -38,9 +39,12 @@ export const BashTool = {
     },
     async call(input) {
         const timeout = Math.min(input.timeout || 120000, 600000);
+        const harness = rejectHarnessBash(input.command);
+        if (harness) return harness;
+        const command = rewriteFindCommand(input.command, process.cwd());
 
         if (input.run_in_background) {
-            return runBackground(input.command);
+            return runBackground(command);
         }
 
         return new Promise((resolve) => {
@@ -49,7 +53,7 @@ export const BashTool = {
             let killed = false;
             let exitCode = null;
 
-            const proc = spawn('bash', ['-c', input.command], {
+            const proc = spawn('bash', ['-c', command], {
                 env: { ...process.env },
                 stdio: ['pipe', 'pipe', 'pipe'],
                 timeout: 0, // we handle timeout ourselves

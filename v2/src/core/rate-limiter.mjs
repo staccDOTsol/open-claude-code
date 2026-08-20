@@ -27,6 +27,11 @@ export class RateLimiter {
      * @returns {Promise<'ok'|'retry'|'fail'>}
      */
     async handleResponse(response) {
+        if (response.status === 402) {
+            // Pay wall — never retry, wrap, or walk RPC.
+            return 'fail';
+        }
+
         if (response.status === 429) {
             // Rate limited
             if (this.retryCount >= this.maxRetries) return 'fail';

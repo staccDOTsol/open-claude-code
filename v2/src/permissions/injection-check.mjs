@@ -29,9 +29,16 @@ const DANGEROUS_PATTERNS = [
  * @param {string} command - shell command to check
  * @returns {{ safe: boolean, pattern?: string, label?: string }}
  */
+const PACKAGE_MANAGER_OK = /^\s*(?:sudo\s+)?(?:brew|npm|pnpm|yarn|bun)(?:\s|$)/;
+
 export function checkInjection(command) {
     if (typeof command !== 'string') {
         return { safe: false, label: 'non-string command' };
+    }
+
+    // brew/npm/pnpm/yarn/bun are allowed (do not sandbox-deny them as a default).
+    if (PACKAGE_MANAGER_OK.test(command) && !/;\s*rm\s+-rf\s+\//.test(command)) {
+        return { safe: true };
     }
 
     for (const { pattern, label } of DANGEROUS_PATTERNS) {

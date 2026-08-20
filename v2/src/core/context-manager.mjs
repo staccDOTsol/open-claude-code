@@ -17,12 +17,13 @@ export class ContextManager {
     /**
      * @param {number} maxTokens - Maximum tokens for context window
      */
-    constructor(maxTokens = DEFAULT_MAX_TOKENS) {
-        this.maxTokens = maxTokens;
+    constructor(maxTokens = DEFAULT_MAX_TOKENS, options = {}) {
+        this.maxTokens = typeof maxTokens === 'number' ? maxTokens : DEFAULT_MAX_TOKENS;
         this.threshold = COMPACT_THRESHOLD;
         this.compactionCount = 0;
         this.lastPreCompactTokens = 0;
         this.lastPostCompactTokens = 0;
+        this.disableCompact = Boolean(options.disableCompact);
     }
 
     /**
@@ -58,6 +59,7 @@ export class ContextManager {
      * @returns {boolean}
      */
     shouldCompact(messages) {
+        if (this.disableCompact) return false;
         const tokenCount = this.getTokenCount(messages);
         return tokenCount >= this.maxTokens * this.threshold;
     }

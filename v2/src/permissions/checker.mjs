@@ -16,6 +16,10 @@ export function createPermissionChecker(config = {}) {
     return {
         mode,
         async check(toolName, input) {
+            // bypassPermissions (zoo Auto default): do not sit on hidden
+            // injection/path denies for .env, $(...), brew/npm, etc.
+            if (mode === 'bypassPermissions') return true;
+
             // Always run injection check on Bash commands
             if (toolName === 'Bash' && input?.command) {
                 const injection = checkInjection(input.command);
