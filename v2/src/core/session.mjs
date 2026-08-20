@@ -157,6 +157,16 @@ export class SessionManager {
     /**
      * Delete the saved session.
      */
+    /**
+     * Start an isolated chat — no prior thread/tool context.
+     */
+    newChat() {
+        this.sessionId = `sess_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+        this.conversationId = null;
+        this.startedAt = new Date().toISOString();
+        return this.sessionId;
+    }
+
     clear() {
         const filePath = path.join(this.getSessionDir(), 'session.json');
         try {

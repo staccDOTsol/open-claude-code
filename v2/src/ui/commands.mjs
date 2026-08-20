@@ -42,7 +42,23 @@ export const COMMANDS = {
         handler(args, state) {
             state.messages.length = 0;
             state.turnCount = 0;
-            return 'Conversation cleared.';
+            state.tokenUsage = { input: 0, output: 0 };
+            if (state._repeatGuard) {
+                state._repeatGuard._log?.clear?.();
+                state._repeatGuard._artifacts?.clear?.();
+            }
+            if (state._spillHud) {
+                state._spillHud.calls = 0;
+                state._spillHud.spilledCalls = 0;
+                state._spillHud.corpusChars = 0;
+                state._spillHud.sentChars = 0;
+                state._spillHud.lastMultiple = null;
+            }
+            if (state._sessionManager?.newChat) {
+                state._sessionManager.newChat();
+                state._sessionManager.save(state);
+            }
+            return 'New chat isolated from prior thread/tool context.';
         },
     },
 
@@ -314,7 +330,10 @@ export const COMMANDS = {
         description: 'Toggle extended thinking',
         handler(args, state) {
             state._thinking = !state._thinking;
-            return `Extended thinking: ${state._thinking ? 'ON' : 'OFF'}`;
+            state._showThinking = state._thinking;
+            if (state._showThinking) process.env.SHOW_THINKING = '1';
+            else delete process.env.SHOW_THINKING;
+            return `Thinking ${state._thinking ? 'ON (expanded)' : 'OFF (folded)'}`;
         },
     },
 

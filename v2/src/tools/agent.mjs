@@ -59,7 +59,7 @@ export const AgentTool = {
     _nextBgId: 0,
 
     async call(input) {
-        const model = input.model || process.env.SUBAGENT_MODEL || 'claude-sonnet-4-6';
+        const model = input.model || process.env.SUBAGENT_MODEL || process.env.CLAUDE_CODE_SUBAGENT_MODEL || 'openzoo-claude-sonnet';
         const tools = createToolRegistry();
         const permissions = createPermissionChecker({ defaultMode: 'bypassPermissions' });
 

@@ -2093,7 +2093,11 @@ section('OpenZoo: env, auth, catalog, savings');
         spillMultiple,
         parseSpillHeaders,
         paymentErrorFromResponse,
-        ZOO_LOCAL_BASE,
+        bindMessagesForSend,
+        pickClassifierModel,
+        pickRaceCandidates,
+        raceFirstX,
+        classifyRaceWinnerHeuristic,
     } = await import('../src/core/openzoo.mjs');
     const {
         rewriteFindCommand,
@@ -2240,6 +2244,53 @@ section('OpenZoo: env, auth, catalog, savings');
 
     const bashOut = await registry.call('Bash', { command: 'WRITE:secret.txt' });
     assertIncludes(bashOut, 'not a bash command', 'Bash tool rejects WRITE:');
+
+    assertEqual(isAutoModel(''), false, 'empty model is not Auto');
+    const raceCatalog = ['claude-opus-5', 'openzoo-haiku', 'openzoo-sonnet', 'openzoo/auto'];
+    const racers = pickRaceCandidates(raceCatalog, 3);
+    assert(!racers.includes('openzoo/auto'), 'race candidates never include openzoo/auto');
+    assert(!racers.some(id => /opus/i.test(id)), 'race candidates skip opus');
+    const clf = pickClassifierModel(['claude-opus-5', 'openzoo-haiku', 'openzoo-sonnet']);
+    assert(!/opus/i.test(clf), 'classifier is not opus');
+    assertEqual(clf, 'openzoo-haiku', 'classifier prefers tiny model');
+
+    const bound = bindMessagesForSend(
+        Array.from({ length: 20 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(400) })),
+        { tokenGate: 2000 },
+    );
+    assert(bound.length < 20, 'bind/spill at 2k tokens shortens prefix');
+    assertIncludes(bound[0].content, 'bound prefix', 'bound prefix marker');
+
+    const race = await raceFirstX(['slow', 'fast', 'mid'], {
+        firstX: 2,
+        bar: 0.99,
+        runOne: async (m) => {
+            if (m === 'slow') await new Promise(r => setTimeout(r, 40));
+            return { content: [{ type: 'text', text: m === 'fast' ? 'ok' : 'x' }] };
+        },
+        classify: (replies) => classifyRaceWinnerHeuristic(replies, { bar: 0.99 }),
+    });
+    assert(race.replies.length <= 2, 'race takes first X replies, does not wait for bar');
+    assert(race.winner === 'fast' || race.reason === 'last_of_x' || race.replies.some(r => r.model === race.winner), 'race picks a reply among first X');
+
+    const low = classifyRaceWinnerHeuristic([
+        { model: 'a', result: { content: [{ type: 'text', text: 'x' }] } },
+        { model: 'b', result: { content: [{ type: 'text', text: 'y' }] } },
+    ], { bar: 0.99 });
+    assertEqual(low.model, 'b', 'if none clear the bar, take the last of those X');
+
+    const clearState = {
+        messages: [{ role: 'user', content: 'old' }],
+        turnCount: 3,
+        tokenUsage: { input: 9, output: 9 },
+        _repeatGuard: new ToolRepeatGuard(),
+        _sessionManager: new SessionManager('/tmp/occ-isolate-test'),
+    };
+    const oldId = clearState._sessionManager.sessionId;
+    const cleared = COMMANDS['/clear'].handler('', clearState);
+    assertEqual(clearState.messages.length, 0, 'new chat clears messages');
+    assert(clearState._sessionManager.sessionId !== oldId, 'new chat gets a new session id');
+    assertIncludes(cleared, 'isolated', 'clear isolates prior thread');
 
     if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = prevKey;

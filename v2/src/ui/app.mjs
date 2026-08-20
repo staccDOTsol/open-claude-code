@@ -213,9 +213,14 @@ export function App({ agentLoop, settings }) {
             return;
         }
 
-        addMessage({ role: 'user', content: trimmed });
+        const last = agentLoop.state.messages[agentLoop.state.messages.length - 1];
+        if (!(last?.role === 'user' && last.content === trimmed)) {
+            agentLoop.state.messages.push({ role: 'user', content: trimmed });
+            agentLoop.state.turnCount = (agentLoop.state.turnCount || 0) + 1;
+        }
         const session = agentLoop.state._sessionManager;
         if (session) session.save(agentLoop.state);
+        addMessage({ role: 'user', content: trimmed });
         runPrompt(trimmed);
     }, [handleCommand, addMessage, runPrompt]);
 
@@ -231,6 +236,11 @@ export function App({ agentLoop, settings }) {
         }
         if (key.ctrl && ch === 'l') {
             setMessages([]);
+        }
+        if (key.ctrl && (ch === 't' || ch === 'T')) {
+            agentLoop.state._showThinking = !agentLoop.state._showThinking;
+            if (agentLoop.state._showThinking) process.env.SHOW_THINKING = '1';
+            else delete process.env.SHOW_THINKING;
         }
     });
 

@@ -27,6 +27,7 @@ import {
     detectAndApplyZooEnv,
     fetchZooModels,
     isAutoModel,
+    pickDefaultModel,
     resolveApiModel,
 } from './core/openzoo.mjs';
 import { sanitizeAssistantCanvas } from './core/savings.mjs';
@@ -160,11 +161,15 @@ async function main() {
         }
     }
 
-    let model = args.model || settings.model || process.env.ANTHROPIC_MODEL || '';
+    let model = args.model || process.env.ANTHROPIC_MODEL || '';
     const catalog = await fetchZooModels();
-    if (isAutoModel(model) || model === 'openzoo/auto') {
-        model = await resolveApiModel(model, { catalog });
+    const wantAuto = isAutoModel(args.model) || args.model === 'openzoo/auto' || isAutoModel(model);
+    if (wantAuto || (!args.model && !process.env.ANTHROPIC_MODEL && catalog.length)) {
+        model = await resolveApiModel(wantAuto ? 'auto' : model, { catalog });
+    } else if (!model) {
+        model = pickDefaultModel(catalog);
     }
+    if (wantAuto) settings.autoRace = true;
 
     const loop = createAgentLoop({
         model,
@@ -254,6 +259,8 @@ async function main() {
         } else {
             console.log('');
         }
+        const hud = loop.state._spillHud?.format?.();
+        if (hud) process.stderr.write(`\x1b[2m${hud}\x1b[0m\n`);
 
         await cleanup();
     } else {

@@ -7,12 +7,17 @@ import { ContextManager } from './context-manager.mjs';
 import { buildSystemPrompt } from './system-prompt.mjs';
 import {
     anthropicHeaders,
+    bindMessagesForSend,
+    bindTokenGate,
+    classifyRaceWinner,
     compactDisabled,
     createSpillHud,
     isAutoModel,
     isPaymentError,
     messagesUrl,
     paymentErrorFromResponse,
+    pickRaceCandidates,
+    raceFirstX,
     resolveApiModel,
     shouldEnableThinking,
     ZOO_LOCAL_BASE,
@@ -91,11 +96,16 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
                 yield { type: 'stop', reason: 'harness_rejected' };
                 return;
             }
-            state.messages = contextManager.addMessage(state.messages, {
-                role: 'user',
-                content: userMessage,
-            });
-            state.turnCount++;
+            const last = state.messages[state.messages.length - 1];
+            const already = last?.role === 'user' && last.content === userMessage;
+            if (!already) {
+                state.messages = contextManager.addMessage(state.messages, {
+                    role: 'user',
+                    content: userMessage,
+                });
+                state.turnCount++;
+            }
+            // Persist BEFORE any API call (and before a TUI refresh forgets it).
             if (sessionManager) persistUserTurn(sessionManager, state);
 
             // Opt-in cost-cascade routing: pick the cheapest good-enough model
@@ -357,13 +367,37 @@ export async function callAnthropic(model, state, toolDefs, settings, stream, de
         body.thinking = { type: 'enabled', budget_tokens: settings.thinkingBudget || 10000 };
     }
 
-    const bindAt = state._spillHud ? (state._spillHud.sessionMultiple() == null || state._spillHud.sessionMultiple() < 5 ? 2000 : 16000) : 2000;
+    const bindAt = bindTokenGate(state._spillHud?.sessionMultiple?.());
     headers['x-openzoo-bind-tokens'] = String(bindAt);
+
+    const outbound = {
+        ...body,
+        messages: bindMessagesForSend(state.messages, {
+            tokenGate: bindAt,
+            estimate: (m) => state._contextManager ? state._contextManager.getTokenCount(m) : Math.ceil(JSON.stringify(m || []).length / 4),
+        }),
+    };
+
+    if (settings.autoRace && !deps._racing) {
+        const catalog = deps.catalog || state._zooCatalog || [];
+        const candidates = pickRaceCandidates(catalog, settings.raceY || 3);
+        if (candidates.length > 1) {
+            const raced = await raceFirstX(candidates, {
+                firstX: settings.raceX || 2,
+                bar: settings.raceBar || 0.7,
+                runOne: (m) => callAnthropic(m, state, toolDefs, { ...settings, autoRace: false, stream: false }, false, { ...deps, _racing: true, catalog }),
+                classify: (replies, meta) => classifyRaceWinner(replies, { ...meta, catalog }),
+            });
+            const picked = raced.replies.find(r => r.model === raced.winner) || raced.replies[raced.replies.length - 1];
+            if (state) state.model = raced.winner;
+            if (picked?.result) return picked.result;
+        }
+    }
 
     const res = await fetchImpl(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify(outbound),
     });
 
     if (res.status === 402) {
@@ -377,7 +411,7 @@ export async function callAnthropic(model, state, toolDefs, settings, stream, de
     }
 
     if (state._spillHud) {
-        const sent = JSON.stringify(body).length;
+        const sent = JSON.stringify(outbound).length;
         state._spillHud.note(res.headers, sent);
     }
 

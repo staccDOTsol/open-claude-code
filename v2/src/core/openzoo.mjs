@@ -51,7 +51,8 @@ export function isZooBase(url) {
 
 export function isAutoModel(id) {
     const s = String(id || '').trim().toLowerCase();
-    return !s || AUTO_IDS.has(s) || s === 'auto';
+    if (!s) return false;
+    return AUTO_IDS.has(s);
 }
 
 /**
@@ -289,6 +290,89 @@ export function pickClassifierModel(catalog) {
     return notHuge || pickDefaultModel(ids);
 }
 
+export function pickRaceCandidates(catalog, y = 3) {
+    const ids = (Array.isArray(catalog) ? catalog : []).filter(id => id && !isAutoModel(id) && !/opus|claude-opus-5/i.test(id));
+    const rank = (id) => (/haiku|mini|flash|lightning|small|nano/i.test(id) ? 0 : /sonnet|fable/i.test(id) ? 1 : 2);
+    return [...ids].sort((a, b) => rank(a) - rank(b)).slice(0, y);
+}
+
+/**
+ * Bind/spill the outbound prefix. When the HUD multiple is under 5, the gate
+ * is 2k tokens — not a ~16k prefix. Session-wide ~2× is cheap-vs-cheap.
+ */
+export function bindMessagesForSend(messages, { tokenGate = 2000, estimate } = {}) {
+    const list = Array.isArray(messages) ? messages : [];
+    const est = estimate || ((m) => Math.ceil(JSON.stringify(m || []).length / 4));
+    if (est(list) <= tokenGate) return list;
+    let kept = list.slice();
+    while (kept.length > 2 && est(kept) > tokenGate) {
+        kept = kept.slice(1);
+    }
+    if (kept.length < list.length) {
+        return [{ role: 'user', content: '[bound prefix — zoo spill]' }, ...kept];
+    }
+    return kept;
+}
+
+const CLASSIFIER_MAX_TOKENS = 64;
+
+/**
+ * Tiny classifier for Auto race / permission. Never opus. Tiny max_tokens.
+ * Heuristic first; optional paid call via classifyFetch.
+ */
+export function classifyRaceWinnerHeuristic(replies, { bar = 0.7 } = {}) {
+    if (!replies?.length) return { model: null, score: 0 };
+    const scored = replies.map((r, i) => {
+        const text = extractReplyText(r.result);
+        const err = /^(Error:|Payment required|OpenZoo API error)/m.test(text);
+        const score = err ? 0 : Math.min(1, (text || '').length / 200);
+        return { model: r.model, score, index: i, text };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    if (best && best.score >= bar) return best;
+    const last = replies[replies.length - 1];
+    return { model: last.model, score: 0, reason: 'last_of_x' };
+}
+
+export function extractReplyText(result) {
+    if (!result) return '';
+    if (typeof result === 'string') return result;
+    const blocks = result.content || [];
+    return blocks.filter(b => b.type === 'text').map(b => b.text || '').join('');
+}
+
+export async function classifyRaceWinner(replies, opts = {}) {
+    const heuristic = classifyRaceWinnerHeuristic(replies, opts);
+    const catalog = opts.catalog || [];
+    const model = pickClassifierModel(catalog);
+    if (/opus/i.test(model)) return heuristic;
+    if (typeof opts.classifyFetch !== 'function') return heuristic;
+
+    const excerpts = replies.map((r, i) => `#${i} ${r.model}: ${extractReplyText(r.result).slice(0, 240)}`).join('\n');
+    try {
+        const res = await opts.classifyFetch({
+            model,
+            max_tokens: CLASSIFIER_MAX_TOKENS,
+            messages: [{
+                role: 'user',
+                content: `Pick the best reply index (0-${replies.length - 1}) as JSON {"i":n,"score":0-1}.\n${excerpts}`,
+            }],
+        });
+        const text = extractReplyText(res);
+        const m = /\{[^}]*\}/.exec(text || '');
+        const parsed = m ? JSON.parse(m[0]) : null;
+        const i = Number(parsed?.i);
+        const score = Number(parsed?.score);
+        if (Number.isInteger(i) && replies[i] && score >= (opts.bar ?? 0.7)) {
+            return { model: replies[i].model, score };
+        }
+    } catch {
+        // fall through — last of X
+    }
+    return heuristic;
+}
+
 /**
  * Never return openzoo/auto. Resolve Auto via the zoo catalog.
  */
@@ -405,17 +489,33 @@ export async function raceFirstX(candidates, {
 } = {}) {
     const list = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
     if (!list.length) throw new Error('raceFirstX: no candidates');
-    if (list.length === 1) return { winner: list[0], replies: [], reason: 'single' };
+    if (list.length === 1) {
+        const result = typeof runOne === 'function' ? await runOne(list[0]) : null;
+        return { winner: list[0], replies: result ? [{ model: list[0], result }] : [], reason: 'single' };
+    }
 
+    // First X replies back out of Y — classify then; do not wait for the rest
+    // of Y, and do not wait until X pass a bar.
     const replies = [];
-    await Promise.all(list.map(async (model) => {
-        try {
-            const result = await runOne(model);
-            if (replies.length < firstX) replies.push({ model, result });
-        } catch {
-            // loser / error — ignore
+    await new Promise((resolve) => {
+        let done = false;
+        let pending = list.length;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        for (const model of list) {
+            Promise.resolve()
+                .then(() => runOne(model))
+                .then((result) => {
+                    if (done) return;
+                    replies.push({ model, result });
+                    if (replies.length >= firstX) finish();
+                })
+                .catch(() => {})
+                .finally(() => {
+                    pending -= 1;
+                    if (pending <= 0) finish();
+                });
         }
-    }));
+    });
 
     if (!replies.length) throw new Error('raceFirstX: no replies');
     if (replies.length === 1) return { winner: replies[0].model, replies, reason: 'only_reply' };
