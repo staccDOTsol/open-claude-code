@@ -131,6 +131,14 @@ export const COMMANDS = {
         },
     },
 
+    '/auto': {
+        description: 'Use the OpenZoo Auto classifier (not a pinned model)',
+        handler(_args, state) {
+            state.model = 'openzoo/auto';
+            return 'Model: Auto (zoo classifier).';
+        },
+    },
+
     '/model': {
         description: 'Show or switch model (zoo catalog)',
         handler(args, state) {
@@ -139,12 +147,8 @@ export const COMMANDS = {
                 const id = String(args).trim();
                 const auto = !id || id.toLowerCase() === 'auto' || id === 'openzoo/auto';
                 if (auto) {
-                    const pick = catalog.find(m => /sonnet|fable/i.test(m) && !/opus/i.test(m)) || catalog[0];
-                    if (pick) {
-                        state.model = pick;
-                        return `Auto resolved to: ${pick}`;
-                    }
-                    return 'No zoo catalog yet — start the sidecar on :8402 and retry /model.';
+                    state.model = 'openzoo/auto';
+                    return 'Model: Auto (zoo classifier). Not a pinned id.';
                 }
                 state.model = id;
                 return `Model switched to: ${id}`;

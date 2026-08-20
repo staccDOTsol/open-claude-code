@@ -1,7 +1,7 @@
 {
   "name": "openzoo-claude",
-  "version": "2.0.0",
-  "description": "OpenZoo Claude Code CLI — pay-per-call via local zoo proxy (subscription Bearer or x402, no Anthropic API key)",
+  "version": "2.0.1",
+  "description": "OpenZoo Claude Code CLI \u2014 pay-per-call via local zoo proxy (subscription Bearer or x402, no Anthropic API key)",
   "type": "module",
   "bin": {
     "openzoo-claude": "v2/src/index.mjs",

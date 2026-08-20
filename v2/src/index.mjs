@@ -160,11 +160,11 @@ async function main() {
         }
     }
 
-    let model = args.model || settings.model || process.env.ANTHROPIC_MODEL || '';
+    // Auto is the OpenZoo classifier. Ignore ~/.claude model pins (grok 4.6, sonnet-5).
+    // Only an explicit -m/--model flag leaves Auto.
+    let model = args.model || 'openzoo/auto';
     const catalog = await fetchZooModels();
-    if (isAutoModel(model) || model === 'openzoo/auto') {
-        model = await resolveApiModel(model, { catalog });
-    }
+    if (!args.model || isAutoModel(model)) model = 'openzoo/auto';
 
     const loop = createAgentLoop({
         model,

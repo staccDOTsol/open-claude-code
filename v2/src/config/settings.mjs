@@ -30,7 +30,7 @@ export const SETTINGS_SCHEMA = {
         Stop: [],
         SessionStart: [],
     },
-    model: 'claude-sonnet-4-6',
+    model: 'openzoo/auto',
     subagentModel: null,
     fastModel: 'claude-haiku-4-5',
     fastMode: false,

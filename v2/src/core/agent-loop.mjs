@@ -336,12 +336,7 @@ export async function callAnthropic(model, state, toolDefs, settings, stream, de
     const { headers } = anthropicHeaders(env);
 
     let apiModel = model;
-    if (isAutoModel(model) || !model) {
-        apiModel = await resolveApiModel(model, { env, fetchImpl, catalog: deps.catalog });
-    }
-    if (isAutoModel(apiModel) || apiModel === 'openzoo/auto') {
-        apiModel = await resolveApiModel('auto', { env, fetchImpl, catalog: deps.catalog });
-    }
+    if (!apiModel || isAutoModel(apiModel)) apiModel = 'openzoo/auto';
 
     const body = {
         model: apiModel,

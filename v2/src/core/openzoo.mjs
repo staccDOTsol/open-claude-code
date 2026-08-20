@@ -290,13 +290,13 @@ export function pickClassifierModel(catalog) {
 }
 
 /**
- * Never return openzoo/auto. Resolve Auto via the zoo catalog.
+ * Auto is the OpenZoo classifier/race (openzoo/auto). Never pin it to a
+ * catalog id like anthropic/claude-sonnet-5 or grok-4.6 — the zoo does that.
  */
 export async function resolveApiModel(requested, opts = {}) {
     const id = String(requested || '').trim();
-    if (id && !isAutoModel(id)) return id;
-    const catalog = opts.catalog || await fetchZooModels(opts);
-    return pickDefaultModel(catalog);
+    if (!id || isAutoModel(id)) return 'openzoo/auto';
+    return id;
 }
 
 /**
