@@ -2308,7 +2308,7 @@ section('OpenZoo: env, auth, catalog, savings');
     assertIncludes(hud.format(), 'spilled', 'HUD paints spilled × once anything is bound');
     assertEqual(bindTokenGate(10, { auto: true }), 2000, 'Auto bind/spill gate is 2k');
     assertEqual(bindTokenGate(10), 16000, 'thick HUD keeps 16k gate');
-    const longMsgs = Array.from({ length: 12 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(400) }));
+    const longMsgs = Array.from({ length: 20 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(400) }));
     const boundMsgs = bindMessagesForSend(longMsgs, { tokenGate: 2000 });
     assert(messagesWereBound(longMsgs, boundMsgs), 'messagesWereBound detects client bind');
 
