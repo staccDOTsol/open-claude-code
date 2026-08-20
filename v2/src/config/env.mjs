@@ -10,8 +10,13 @@
  */
 export const ENV_SCHEMA = {
     // API Configuration
-    ANTHROPIC_API_KEY: { type: 'string', description: 'Anthropic API key' },
-    ANTHROPIC_BASE_URL: { type: 'string', default: 'https://api.anthropic.com', description: 'Anthropic API base URL' },
+    ANTHROPIC_API_KEY: { type: 'string', description: 'Must stay unset — would bill api.anthropic.com' },
+    ANTHROPIC_BASE_URL: { type: 'string', default: 'http://localhost:8402/v1', description: 'OpenZoo Messages base URL' },
+    OPENZOO_SUBSCRIPTION_KEY: { type: 'string', description: 'Stripe subscription bearer (never logged)' },
+    OPENZOO_SUBSCRIPTION_PATH: { type: 'string', description: 'Path to ~/.openzoo/subscription.json' },
+    OPENZOO_PORT: { type: 'number', default: 8402, description: 'Local OpenZoo sidecar port' },
+    DISABLE_COMPACT: { type: 'boolean', default: false, description: 'Disable context compact (zoo default on)' },
+    DISABLE_AUTO_COMPACT: { type: 'boolean', default: false, description: 'Disable auto-compact (zoo default on)' },
     ANTHROPIC_MODEL: { type: 'string', description: 'Override default model' },
     OPENAI_API_KEY: { type: 'string', description: 'OpenAI API key for compatible models' },
     OPENAI_BASE_URL: { type: 'string', default: 'https://api.openai.com/v1', description: 'OpenAI-compatible base URL' },

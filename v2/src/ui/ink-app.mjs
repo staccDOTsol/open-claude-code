@@ -164,7 +164,10 @@ export function renderStatusBar(state) {
     const costOut = (out / 1_000_000) * 15;
     const cost = `$${(costIn + costOut).toFixed(4)}`;
 
-    const right = `${model} | ${tokens} | ${cost} | ${turns}`;
+    const spill = state._spillHud?.format?.() || '';
+    const right = spill
+        ? `${model} | ${spill} | ${tokens} | ${turns}`
+        : `${model} | ${tokens} | ${cost} | ${turns}`;
     const padding = Math.max(0, cols - right.length - 1);
     return c('dim', `${' '.repeat(padding)}${right}`);
 }

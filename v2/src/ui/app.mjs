@@ -214,6 +214,8 @@ export function App({ agentLoop, settings }) {
         }
 
         addMessage({ role: 'user', content: trimmed });
+        const session = agentLoop.state._sessionManager;
+        if (session) session.save(agentLoop.state);
         runPrompt(trimmed);
     }, [handleCommand, addMessage, runPrompt]);
 
@@ -268,6 +270,7 @@ export function App({ agentLoop, settings }) {
             mode,
             startTime,
             contextMax: settings.maxContextTokens || 200000,
+            spillLabel: agentLoop.state._spillHud?.format?.() || '',
         }),
     );
 }

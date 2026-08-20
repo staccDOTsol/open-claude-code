@@ -5,12 +5,29 @@
 import { streamResponse, accumulateStream } from './streaming.mjs';
 import { ContextManager } from './context-manager.mjs';
 import { buildSystemPrompt } from './system-prompt.mjs';
+import {
+    anthropicHeaders,
+    compactDisabled,
+    createSpillHud,
+    isAutoModel,
+    isPaymentError,
+    messagesUrl,
+    paymentErrorFromResponse,
+    resolveApiModel,
+    shouldEnableThinking,
+    ZOO_LOCAL_BASE,
+} from './openzoo.mjs';
+import { persistUserTurn, ToolRepeatGuard, isHarnessUserText, rewriteFindCommand, rejectHarnessBash } from './savings.mjs';
 
 /** Maximum number of consecutive tool-use continuation turns before aborting. */
 const MAX_TOOL_RECURSION_DEPTH = 50;
 
-export function createAgentLoop({ model, tools, permissions, settings, hooks, cascade = null }) {
-    const contextManager = new ContextManager(settings.maxContextTokens || 180000);
+export function createAgentLoop({ model, tools, permissions, settings, hooks, cascade = null, sessionManager = null }) {
+    const contextManager = new ContextManager(settings.maxContextTokens || 180000, {
+        disableCompact: compactDisabled(process.env, settings),
+    });
+    const repeatGuard = new ToolRepeatGuard();
+    const spillHud = createSpillHud();
 
     // Build system prompt using the new builder
     const promptResult = buildSystemPrompt({
@@ -29,6 +46,9 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
         tools,
         _contextManager: contextManager,
         _cascade: cascade,
+        _sessionManager: sessionManager,
+        _repeatGuard: repeatGuard,
+        _spillHud: spillHud,
     };
 
     // Self-optimization bookkeeping for the current top-level task (opt-in).
@@ -63,13 +83,20 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
             return;
         }
 
-        // Add user message (skip for continuation turns)
+        // Add user message (skip for continuation turns). Persist BEFORE any
+        // API call or TUI refresh — refresh must not forget the turn.
         if (userMessage && !options.continuation) {
+            if (isHarnessUserText(userMessage)) {
+                yield { type: 'error', message: 'Ask-mode text harness is disabled. Use Claude Code tools, not RUN:/WRITE:/SPAWN:.' };
+                yield { type: 'stop', reason: 'harness_rejected' };
+                return;
+            }
             state.messages = contextManager.addMessage(state.messages, {
                 role: 'user',
                 content: userMessage,
             });
             state.turnCount++;
+            if (sessionManager) persistUserTurn(sessionManager, state);
 
             // Opt-in cost-cascade routing: pick the cheapest good-enough model
             // for this task and record outcome bookkeeping. Default path (no
@@ -95,8 +122,8 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
             return;
         }
 
-        // Auto-compact if needed
-        if (contextManager.shouldCompact(state.messages)) {
+        // Auto-compact if needed (zoo: DISABLE_COMPACT — proxy already spills)
+        if (!compactDisabled(process.env, settings) && contextManager.shouldCompact(state.messages)) {
             yield { type: 'compaction', count: contextManager.compactionCount + 1 };
             state.messages = contextManager.compact(state.messages);
         }
@@ -143,6 +170,11 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
             }
         } catch (err) {
             recordOptOutcome(false);
+            if (isPaymentError(err)) {
+                yield { type: 'error', message: err.message, paymentRequired: true, status: 402 };
+                yield { type: 'stop', reason: 'payment_required' };
+                return;
+            }
             yield { type: 'error', message: err.message };
             return;
         }
@@ -209,10 +241,25 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
                 yield { type: 'tool_progress', tool: block.name, status: 'running' };
 
                 let result;
-                try {
-                    result = await tools.call(block.name, block.input);
-                } catch (err) {
-                    result = `Tool error: ${err.message}`;
+                const input = { ...block.input };
+                if (block.name === 'Bash' && input.command) {
+                    const harness = rejectHarnessBash(input.command);
+                    if (harness) {
+                        result = harness;
+                    } else {
+                        input.command = rewriteFindCommand(input.command, settings.cwd || process.cwd());
+                    }
+                }
+                const skip = result ? null : repeatGuard.check(block.name, input);
+                if (skip?.skip) {
+                    result = skip.message;
+                } else if (!result) {
+                    try {
+                        result = await tools.call(block.name, input);
+                    } catch (err) {
+                        result = `Tool error: ${err.message}`;
+                    }
+                    repeatGuard.record(block.name, input, result);
                 }
 
                 // Run post-tool hooks
@@ -241,11 +288,7 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
         if (hooks) {
             const allowStop = await hooks.runStop();
             if (!allowStop) {
-                // Hook prevented stopping — continue with a nudge
-                state.messages = contextManager.addMessage(state.messages, {
-                    role: 'user',
-                    content: '[System: A hook prevented stopping. Please continue with the task.]',
-                });
+                // Continue via tools — never inject NUDGE / RUN:/WRITE: harness text.
                 yield* run(null, { continuation: true, _depth: depth + 1 });
                 return;
             }
@@ -257,7 +300,7 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
         yield { type: 'stop', reason: response.stop_reason || 'end_turn' };
     }
 
-    return { run, state };
+    return { run, state, persist: () => sessionManager?.save(state) };
 }
 
 function detectProvider(model) {
@@ -278,12 +321,30 @@ async function callApiStreaming(provider, model, state, toolDefs, settings) {
     return caller(model, state, toolDefs, settings, true);
 }
 
-async function callAnthropic(model, state, toolDefs, settings, stream) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+/**
+ * Zoo-native Anthropic Messages client.
+ * Honors ANTHROPIC_BASE_URL. Auth is Bearer (subscription / AUTH_TOKEN / sk-openzoo).
+ * Never requires ANTHROPIC_API_KEY. Never POSTs to api.anthropic.com.
+ */
+export async function callAnthropic(model, state, toolDefs, settings, stream, deps = {}) {
+    const fetchImpl = deps.fetch || globalThis.fetch;
+    const env = deps.env || process.env;
+    delete env.ANTHROPIC_API_KEY;
+
+    const base = env.ANTHROPIC_BASE_URL || ZOO_LOCAL_BASE;
+    const url = messagesUrl(base);
+    const { headers } = anthropicHeaders(env);
+
+    let apiModel = model;
+    if (isAutoModel(model) || !model) {
+        apiModel = await resolveApiModel(model, { env, fetchImpl, catalog: deps.catalog });
+    }
+    if (isAutoModel(apiModel) || apiModel === 'openzoo/auto') {
+        apiModel = await resolveApiModel('auto', { env, fetchImpl, catalog: deps.catalog });
+    }
 
     const body = {
-        model,
+        model: apiModel,
         max_tokens: settings.maxTokens || 16384,
         messages: state.messages,
         ...(state.systemPrompt && { system: state.systemPrompt }),
@@ -291,24 +352,33 @@ async function callAnthropic(model, state, toolDefs, settings, stream) {
         ...(stream && { stream: true }),
     };
 
-    // Enable extended thinking if model supports it
-    if (model.includes('opus') || settings.thinking) {
+    // Thinking only if the user asked — never model.includes('opus') (zoo catalog ids).
+    if (shouldEnableThinking(apiModel, { ...settings, _thinking: state._thinking }, env)) {
         body.thinking = { type: 'enabled', budget_tokens: settings.thinkingBudget || 10000 };
     }
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const bindAt = state._spillHud ? (state._spillHud.sessionMultiple() == null || state._spillHud.sessionMultiple() < 5 ? 2000 : 16000) : 2000;
+    headers['x-openzoo-bind-tokens'] = String(bindAt);
+
+    const res = await fetchImpl(url, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-        },
+        headers,
         body: JSON.stringify(body),
     });
 
+    if (res.status === 402) {
+        const err = await res.text();
+        throw paymentErrorFromResponse(402, err);
+    }
+
     if (!res.ok) {
         const err = await res.text();
-        throw new Error(`Anthropic API error ${res.status}: ${err}`);
+        throw new Error(`OpenZoo API error ${res.status}: ${err}`);
+    }
+
+    if (state._spillHud) {
+        const sent = JSON.stringify(body).length;
+        state._spillHud.note(res.headers, sent);
     }
 
     if (stream) {

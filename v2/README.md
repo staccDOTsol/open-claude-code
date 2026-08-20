@@ -3,10 +3,12 @@
 ## Quick Start
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-node src/index.mjs "hello"          # one-shot
+# Zoo sidecar on :8402. Never set ANTHROPIC_API_KEY.
+unset ANTHROPIC_API_KEY
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8402/v1
+export ANTHROPIC_AUTH_TOKEN=sk-openzoo
+node src/index.mjs -p hi             # print mode (boolean -p)
 node src/index.mjs                   # interactive REPL
-node src/index.mjs -m claude-opus-4-6 -p "explain this"  # print mode
 ```
 
 ## Architecture

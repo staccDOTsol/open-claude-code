@@ -32,9 +32,12 @@ export function parseArgs(args) {
         debug: false,
         showVersion: false,
         showHelp: false,
+        print: false,
         // Opt-in metaharness self-optimization. null = unset (defer to env/setting).
         selfOptimize: null,
     };
+
+    const positionals = [];
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -49,9 +52,15 @@ export function parseArgs(args) {
                 result.permissionMode = args[++i];
                 break;
 
+            case '--dangerously-skip-permissions':
+                result.permissionMode = 'bypassPermissions';
+                break;
+
             case '--print':
             case '-p':
-                result.prompt = args[++i];
+                // Boolean, like official Claude Code. Prompt is positional
+                // (`occ -p hi` or `claude --print --output-format stream-json`).
+                result.print = true;
                 break;
 
             case '--output-format':
@@ -106,12 +115,20 @@ export function parseArgs(args) {
                 break;
 
             default:
-                // Bare argument becomes prompt
+                if (arg === '--print=true' || arg === '-p=true') {
+                    result.print = true;
+                    break;
+                }
+                // Bare argument becomes prompt (so `occ -p hi` still works)
                 if (!arg.startsWith('-')) {
-                    result.prompt = arg;
+                    positionals.push(arg);
                 }
                 break;
         }
+    }
+
+    if (positionals.length) {
+        result.prompt = positionals.join(' ');
     }
 
     return result;
@@ -123,13 +140,19 @@ export function parseArgs(args) {
  */
 export function getUsageText() {
     return `
-Usage: occ [options] [prompt]
+Usage: openzoo-claude | occ | claude [options] [prompt]
+
+OpenZoo Claude Code CLI — pay-per-call via the local zoo proxy (:8402).
+Subscription Bearer or x402. Never ANTHROPIC_API_KEY / api.anthropic.com.
 
 Options:
-  --model, -m <model>        Model to use (default: claude-sonnet-4-6)
+  --model, -m <model>        Model to use (never pass openzoo/auto — it is resolved)
   --permission-mode <mode>   Permission mode (bypassPermissions, acceptEdits, plan, auto, dontAsk)
-  --print, -p <prompt>       Non-interactive mode: run prompt and exit
+  --dangerously-skip-permissions
+                             Alias for --permission-mode bypassPermissions
+  --print, -p                Print mode (boolean). Prompt is the positional argument
   --output-format <fmt>      Output format: text, json, stream-json
+                             stream-json emits official Claude Code NDJSON
   --system-prompt <text>     Override system prompt
   --add-dir <dir>            Additional directory to search for CLAUDE.md
   --max-turns <n>            Maximum conversation turns
@@ -143,17 +166,16 @@ Options:
   --version                  Show version
   --help, -h                 Show this help
 
-Subcommands:
-  occ optimize <status|route|report|reset|help>   Inspect/manage the self-optimization router (no model calls)
-  occ redblue [...]          Delegate to @metaharness/redblue CLI (self red/blue-team testing, via npx)
-  occ darwin  [...]          Delegate to @metaharness/darwin CLI (config evolution, via npx)
+Env (applied automatically when :8402 /v1/info answers):
+  ANTHROPIC_BASE_URL=http://localhost:8402/v1
+  ANTHROPIC_AUTH_TOKEN=<subscription key or sk-openzoo>
+  ANTHROPIC_API_KEY unset
 
 Examples:
   occ                        Start interactive REPL
-  occ -p "What is 2+2?"     Run prompt and exit
-  occ -m claude-haiku-4-5    Use Haiku model
-  occ --debug -p "Fix bug"  Debug mode with prompt
-  occ --self-optimize -p "..."   Run with the cost-cascade router enabled
-  occ optimize status        Show the router config and recorded outcomes
+  occ -p hi                  Print mode (positional prompt)
+  occ --print --output-format stream-json "hello"
+  occ -m openzoo-claude-sonnet -p "explain this"
+  occ --dangerously-skip-permissions -p "fix the bug"
 `.trim();
 }

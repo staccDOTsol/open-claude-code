@@ -122,4 +122,11 @@ function applyEnvOverrides(settings) {
     if (process.env.CLAUDE_CODE_ENABLE_TASKS === '1') settings.enableTeams = true;
     if (process.env.CLAUDE_CODE_SELF_OPTIMIZE === '1') settings.selfOptimize = true;
     if (process.env.CLAUDE_CODE_SELF_OPTIMIZE === '0') settings.selfOptimize = false;
+    if (process.env.DISABLE_COMPACT === '1' || process.env.DISABLE_AUTO_COMPACT === '1') {
+        settings.autoCompactEnabled = false;
+    }
+    if (process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS) {
+        const n = parseInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, 10);
+        if (!isNaN(n)) settings.maxContextTokens = n;
+    }
 }

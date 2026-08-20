@@ -11,7 +11,7 @@ import { createPermissionChecker } from '../src/permissions/checker.mjs';
 import { ContextManager } from '../src/core/context-manager.mjs';
 import { HookEngine } from '../src/hooks/engine.mjs';
 import { accumulateStream } from '../src/core/streaming.mjs';
-import { createAgentLoop } from '../src/core/agent-loop.mjs';
+import { createAgentLoop, callAnthropic } from '../src/core/agent-loop.mjs';
 import { McpClient } from '../src/mcp/client.mjs';
 import { SessionManager } from '../src/core/session.mjs';
 import { CheckpointManager } from '../src/core/checkpoints.mjs';
@@ -1522,17 +1522,19 @@ try { fs.rmSync(oauthTmpDir, { recursive: true, force: true }); } catch {}
 
 section('Phase 4: Updated Permission Checker');
 
-// Checker blocks dangerous commands
-const strictChecker = createPermissionChecker({ defaultMode: 'bypassPermissions' });
-const injectionBlocked = await strictChecker.check('Bash', { command: '; rm -rf /' });
-assertEqual(injectionBlocked, false, 'Injection blocked even in bypass mode');
+// Zoo Auto / bypass: injection and path checks must not sit on hidden denies
+const bypassChecker = createPermissionChecker({ defaultMode: 'bypassPermissions' });
+assertEqual(await bypassChecker.check('Bash', { command: '$(whoami)' }), true, 'bypass allows $(...) for zoo Auto');
+assertEqual(await bypassChecker.check('Write', { file_path: '/home/user/.env' }), true, 'bypass allows .env for zoo Auto');
+assertEqual(await bypassChecker.check('Bash', { command: 'npm install' }), true, 'bypass allows npm');
+assertEqual(await bypassChecker.check('Bash', { command: 'brew install git' }), true, 'bypass allows brew');
 
-// Checker blocks sensitive file paths
-const pathBlocked = await strictChecker.check('Write', { file_path: '/home/user/.env' });
-assertEqual(pathBlocked, false, 'Sensitive path blocked in bypass mode');
+const defaultChecker = createPermissionChecker({ defaultMode: 'default' });
+assertEqual(await defaultChecker.check('Bash', { command: '; rm -rf /' }), false, 'default mode still blocks rm -rf /');
+assertEqual(await defaultChecker.check('Write', { file_path: '/home/user/.env' }), false, 'default mode still blocks .env');
 
 // Safe commands pass in bypass mode
-const safeCmd = await strictChecker.check('Bash', { command: 'echo hello' });
+const safeCmd = await bypassChecker.check('Bash', { command: 'echo hello' });
 assertEqual(safeCmd, true, 'Safe command passes in bypass mode');
 
 // Plan mode only allows read tools
@@ -1637,7 +1639,7 @@ assert(providerList.every(p => p.id && p.name && p.envKey), 'All providers have 
 
 // Auth headers
 const anthropicHeaders = PROVIDERS.anthropic.authHeader('test-key');
-assertEqual(anthropicHeaders['x-api-key'], 'test-key', 'Anthropic auth header has api key');
+assertEqual(anthropicHeaders['Authorization'], 'Bearer test-key', 'Anthropic auth header is Bearer');
 assertIncludes(anthropicHeaders['anthropic-version'], '2023', 'Anthropic has version header');
 
 const openaiHeaders = PROVIDERS.openai.authHeader('test-key');
@@ -2076,6 +2078,175 @@ section('MetaHarness: default behavior unchanged when disabled');
     const result = executeCommand('/optimize status', loop.state);
     assertIncludes(result.response, 'self-optimization', '/optimize status renders');
     assert(result.response.includes('OFF'), '/optimize reports OFF without a live cascade');
+}
+
+section('OpenZoo: env, auth, catalog, savings');
+{
+    const {
+        messagesUrl,
+        resolveZooBearer,
+        anthropicHeaders,
+        applyClaudeZooEnv,
+        isAutoModel,
+        resolveApiModel,
+        shouldEnableThinking,
+        spillMultiple,
+        parseSpillHeaders,
+        paymentErrorFromResponse,
+        ZOO_LOCAL_BASE,
+    } = await import('../src/core/openzoo.mjs');
+    const {
+        rewriteFindCommand,
+        rejectHarnessBash,
+        persistUserTurn,
+        isHarnessCommand,
+        ToolRepeatGuard,
+    } = await import('../src/core/savings.mjs');
+    const { systemInit, assistantMessage, resultSuccess, emitNdjson } = await import('../src/core/stream-json.mjs');
+
+    assertEqual(messagesUrl('http://127.0.0.1:8402/v1'), 'http://127.0.0.1:8402/v1/messages', 'BASE_URL ending in /v1 -> /messages');
+    assertEqual(messagesUrl('http://localhost:8402/v1/'), 'http://localhost:8402/v1/messages', 'Trailing slash stripped');
+    assert(!messagesUrl('https://api.anthropic.com').includes('api.anthropic.com'), 'Never default fetch to api.anthropic.com');
+
+    const env = { ANTHROPIC_API_KEY: 'sk-ant-real', ANTHROPIC_AUTH_TOKEN: 'sk-openzoo' };
+    applyClaudeZooEnv(env, { base: 'http://localhost:8402/v1' });
+    assertEqual(env.ANTHROPIC_API_KEY, undefined, 'applyClaudeZooEnv deletes ANTHROPIC_API_KEY');
+    assertEqual(env.ANTHROPIC_BASE_URL, 'http://localhost:8402/v1', 'applyClaudeZooEnv sets BASE_URL');
+    assertEqual(env.ANTHROPIC_AUTH_TOKEN, 'sk-openzoo', 'AUTH_TOKEN is zoo bearer');
+    assertEqual(env.DISABLE_COMPACT, '1', 'DISABLE_COMPACT set');
+
+    const auth = anthropicHeaders({ ANTHROPIC_AUTH_TOKEN: 'sk-openzoo' });
+    assertEqual(auth.headers.Authorization, 'Bearer sk-openzoo', 'Bearer token, not x-api-key');
+    assertEqual(auth.headers['x-api-key'], undefined, 'No x-api-key from ANTHROPIC_API_KEY');
+
+    const dummy = resolveZooBearer({});
+    assertEqual(dummy.token, 'sk-openzoo', 'Dummy sk-openzoo last resort for local zoo');
+    assertEqual(dummy.source, 'zoo_dummy', 'Dummy is not Anthropic billing');
+
+    assert(isAutoModel('openzoo/auto'), 'openzoo/auto is Auto');
+    assert(isAutoModel('Auto'), 'Auto is Auto');
+    const resolved = await resolveApiModel('openzoo/auto', { catalog: ['openzoo-claude-sonnet', 'openzoo-fable'] });
+    assert(resolved !== 'openzoo/auto', 'openzoo/auto is not sent as model');
+    assertEqual(resolved, 'openzoo-claude-sonnet', 'Auto resolves to catalog id');
+
+    assertEqual(shouldEnableThinking('openzoo-opus-thing', {}), false, 'opus-named zoo id does not force thinking');
+    assertEqual(shouldEnableThinking('x', { thinking: true }), true, 'User-asked thinking is on');
+
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    const prevBase = process.env.ANTHROPIC_BASE_URL;
+    const prevTok = process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:8402/v1';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'sk-openzoo';
+
+    let captured = null;
+    const fakeFetch = async (url, init) => {
+        captured = { url, init };
+        return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({ content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn', usage: {} }),
+            text: async () => '',
+        };
+    };
+
+    let threw = false;
+    try {
+        await callAnthropic('openzoo/auto', { messages: [{ role: 'user', content: 'hi' }] }, [], {}, false, {
+            fetch: fakeFetch,
+            catalog: ['zoo-sonnet'],
+        });
+    } catch (e) {
+        threw = true;
+        failures.push(e.message);
+    }
+    assert(!threw, 'missing API key + zoo BASE_URL does not throw');
+    assertEqual(captured.url, 'http://127.0.0.1:8402/v1/messages', 'POST ${BASE_URL}/messages');
+    assert(!/api\.anthropic\.com/.test(captured.url), 'hardcoded api.anthropic.com is gone when BASE_URL set');
+    assertEqual(JSON.parse(captured.init.body).model, 'zoo-sonnet', 'openzoo/auto is not sent as model');
+    assertEqual(captured.init.headers.Authorization, 'Bearer sk-openzoo', 'Bearer AUTH_TOKEN');
+    assert(!JSON.parse(captured.init.body).thinking, 'no forced thinking on zoo catalog');
+
+    const pay = paymentErrorFromResponse(402, 'wallet is empty');
+    assertEqual(pay.status, 402, '402 is a pay wall');
+    assertIncludes(pay.message, '402', '402 message surfaces pay');
+
+    assertEqual(spillMultiple({ corpusChars: 8000, sentChars: 8000 }), 1, 'equal corpus/sent is 1×');
+    assert(spillMultiple({ corpusChars: 16000, sentChars: 2000 }) === 8, 'basis is unspilled corpus, not sent');
+    const parsedSpill = parseSpillHeaders({ get: (k) => k === 'x-hrr-corpus-chars' ? '4000' : null });
+    assertEqual(parsedSpill.corpusChars, 4000, 'reads x-hrr-corpus-chars');
+
+    assertIncludes(rewriteFindCommand('find / -name x'), 'find . -maxdepth 8', 'find / rewrite');
+    assertIncludes(rewriteFindCommand('find /usr/bin -type f'), 'find . -maxdepth 8', 'find outside workdir rewrite');
+    assert(isHarnessCommand('WRITE:foo.txt'), 'WRITE: is harness');
+    assertIncludes(rejectHarnessBash('WRITE:file'), 'not a bash command', 'no WRITE: bash');
+
+    const guard = new ToolRepeatGuard({ maxIdentical: 2 });
+    guard.record('Bash', { command: 'echo ok' }, 'ok');
+    assert(guard.check('Bash', { command: 'echo ok' }).skip, 'do not redo successful Bash');
+    guard.record('Bash', { command: 'false' }, 'Exit code: 1');
+    guard.record('Bash', { command: 'false' }, 'Exit code: 1');
+    assert(guard.check('Bash', { command: 'false' }).skip, 'cap identical failed bash');
+
+    const saves = [];
+    const session = { save(state) { saves.push(JSON.stringify(state.messages)); return 'ok'; } };
+    const persistLoop = createAgentLoop({
+        model: 'zoo-sonnet',
+        tools: { list() { return []; }, async call() { return ''; } },
+        permissions: { async check() { return true; } },
+        settings: { stream: false },
+        sessionManager: session,
+    });
+    const origFetch = globalThis.fetch;
+    let fetchAfterSave = false;
+    globalThis.fetch = async () => {
+        fetchAfterSave = saves.length > 0;
+        return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({ content: [{ type: 'text', text: 'yo' }], usage: {} }),
+            text: async () => '',
+        };
+    };
+    try {
+        for await (const ev of persistLoop.run('hello persist')) {
+            void ev;
+        }
+    } finally {
+        globalThis.fetch = origFetch;
+    }
+    assert(saves.length > 0, 'persist-before-send saved');
+    assert(fetchAfterSave, 'persist-before-send ran save before fetch');
+    assertIncludes(saves[0], 'hello persist', 'persisted user turn');
+
+    const printArgs = parseArgs(['--print', '--output-format', 'stream-json', 'hi']);
+    assertEqual(printArgs.print, true, '-p/--print is boolean');
+    assertEqual(printArgs.outputFormat, 'stream-json', '--output-format is not consumed as prompt');
+    assertEqual(printArgs.prompt, 'hi', 'prompt is positional');
+    const skip = parseArgs(['--dangerously-skip-permissions', '-p', 'x']);
+    assertEqual(skip.permissionMode, 'bypassPermissions', '--dangerously-skip-permissions aliases bypass');
+
+    const init = systemInit({ sessionId: 's1', model: 'zoo-sonnet', tools: [{ name: 'Bash' }] });
+    assertEqual(init.type, 'system', 'stream-json init type');
+    assertEqual(init.subtype, 'init', 'stream-json init subtype');
+    const asst = assistantMessage({ sessionId: 's1', model: 'm', content: 'hi' });
+    assertEqual(asst.type, 'assistant', 'stream-json assistant');
+    assert(asst.message && asst.message.content, 'assistant has message (official shape)');
+    const fin = resultSuccess({ sessionId: 's1', result: 'hi' });
+    assertEqual(fin.subtype, 'success', 'result subtype success');
+    assertIncludes(emitNdjson(init), '"subtype":"init"', 'NDJSON official');
+
+    const bashOut = await registry.call('Bash', { command: 'WRITE:secret.txt' });
+    assertIncludes(bashOut, 'not a bash command', 'Bash tool rejects WRITE:');
+
+    if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevKey;
+    if (prevBase === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = prevBase;
+    if (prevTok === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+    else process.env.ANTHROPIC_AUTH_TOKEN = prevTok;
 }
 
 // ---------- Summary ----------
