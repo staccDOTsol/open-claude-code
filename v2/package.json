@@ -17,12 +17,11 @@
     "test": "node test/test.mjs"
   },
   "keywords": [
+    "openzoo",
     "claude",
-    "code",
     "cli",
-    "ai",
-    "decompiler",
-    "open-source"
+    "x402",
+    "ai"
   ],
   "license": "MIT",
   "repository": {
@@ -30,9 +29,9 @@
     "url": "git+https://github.com/staccDOTsol/open-claude-code.git"
   },
   "bugs": {
-    "url": "https://github.com/ruvnet/open-claude-code/issues"
+    "url": "https://github.com/staccDOTsol/open-claude-code/issues"
   },
-  "homepage": "https://github.com/ruvnet/open-claude-code#readme",
+  "homepage": "https://openzoo.fun",
   "main": "index.js",
   "directories": {
     "test": "test"

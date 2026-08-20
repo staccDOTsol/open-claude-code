@@ -24,6 +24,7 @@ import {
     WelcomeBanner,
 } from './components.mjs';
 import { executeCommand, COMMANDS } from './commands.mjs';
+import { persistUserTurn, sanitizeAssistantCanvas } from '../core/savings.mjs';
 
 const h = React.createElement;
 
@@ -34,7 +35,9 @@ export function App({ agentLoop, settings }) {
     const [input, setInput] = useState('');
     const [messages, setMessages] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
-    const [model, setModel] = useState(agentLoop.state.model || 'claude-sonnet-4-6');
+    const [model, setModel] = useState(agentLoop.state.model || 'openzoo-claude-sonnet');
+    const [spillLabel, setSpillLabel] = useState(agentLoop.state._spillHud?.format?.() || '');
+    const [showThinking, setShowThinking] = useState(Boolean(agentLoop.state._showThinking));
     const [tokenCount, setTokenCount] = useState({ input: 0, output: 0 });
     const [cost, setCost] = useState(0);
     const [mode] = useState(settings.permissions?.defaultMode || 'default');
@@ -84,7 +87,12 @@ export function App({ agentLoop, settings }) {
             exit();
             return;
         }
+        if (cmdName === '/clear') {
+            setMessages([]);
+        }
         addMessage({ role: 'system', content: response });
+        setSpillLabel(agentLoop.state._spillHud?.format?.() || '');
+        setShowThinking(Boolean(agentLoop.state._showThinking));
 
         // Sync model if it changed
         if (agentLoop.state.model !== model) {
@@ -123,11 +131,12 @@ export function App({ agentLoop, settings }) {
                             if (last && last.role === 'assistant' && last._streaming) {
                                 return [
                                     ...prev.slice(0, -1),
-                                    { ...last, _streaming: false },
+                                    { ...last, _streaming: false, content: sanitizeAssistantCanvas(last.content) },
                                 ];
                             }
-                            if (event.content) {
-                                return [...prev, { role: 'assistant', content: event.content }];
+                            const text = sanitizeAssistantCanvas(event.content);
+                            if (text) {
+                                return [...prev, { role: 'assistant', content: text }];
                             }
                             return prev;
                         });
@@ -187,10 +196,11 @@ export function App({ agentLoop, settings }) {
                         break;
                 }
 
-                // Update token counts
+                // Update token counts + bottom HUD (spilled/session ×, not first-call $)
                 const usage = agentLoop.state.tokenUsage;
                 setTokenCount({ input: usage.input, output: usage.output });
                 updateCost(usage);
+                setSpillLabel(agentLoop.state._spillHud?.format?.() || '');
             }
         } catch (err) {
             addMessage({ role: 'error', content: err.message });
@@ -213,13 +223,13 @@ export function App({ agentLoop, settings }) {
             return;
         }
 
+        // Persist BEFORE any TUI refresh or API call — refresh must not forget the turn.
         const last = agentLoop.state.messages[agentLoop.state.messages.length - 1];
         if (!(last?.role === 'user' && last.content === trimmed)) {
             agentLoop.state.messages.push({ role: 'user', content: trimmed });
             agentLoop.state.turnCount = (agentLoop.state.turnCount || 0) + 1;
         }
-        const session = agentLoop.state._sessionManager;
-        if (session) session.save(agentLoop.state);
+        persistUserTurn(agentLoop.state._sessionManager, agentLoop.state);
         addMessage({ role: 'user', content: trimmed });
         runPrompt(trimmed);
     }, [handleCommand, addMessage, runPrompt]);
@@ -241,6 +251,7 @@ export function App({ agentLoop, settings }) {
             agentLoop.state._showThinking = !agentLoop.state._showThinking;
             if (agentLoop.state._showThinking) process.env.SHOW_THINKING = '1';
             else delete process.env.SHOW_THINKING;
+            setShowThinking(Boolean(agentLoop.state._showThinking));
         }
     });
 
@@ -248,7 +259,7 @@ export function App({ agentLoop, settings }) {
 
     // Build the message list
     const messageElements = messages.map((msg, i) =>
-        h(Message, { key: i, ...msg })
+        h(Message, { key: i, ...msg, expanded: msg.role === 'thinking' ? showThinking : undefined })
     );
 
     return h(Box, { flexDirection: 'column' },
@@ -280,7 +291,7 @@ export function App({ agentLoop, settings }) {
             mode,
             startTime,
             contextMax: settings.maxContextTokens || 200000,
-            spillLabel: agentLoop.state._spillHud?.format?.() || '',
+            spillLabel,
         }),
     );
 }

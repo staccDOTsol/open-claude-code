@@ -295,26 +295,20 @@ Invoke with `/deploy` in the REPL.
 
 ---
 
-## 🔐 Multi-Provider Support
+## 🔐 Pay lanes
 
-Works with 5 AI providers:
+Never set `ANTHROPIC_API_KEY` — official Claude bills `api.anthropic.com` if that key is present.
 
 ```bash
-# Anthropic (default)
-ANTHROPIC_API_KEY=... occ "hello"
+# Subscription (no x402)
+# paste the key from https://zoo.openzoo.fun  (or /login <key> in the REPL)
+export OPENZOO_SUBSCRIPTION_KEY=...   # never logged
 
-# OpenAI
-OPENAI_API_KEY=... occ -m gpt-4o "hello"
-
-# Google
-GOOGLE_AI_API_KEY=... occ -m gemini-2.5-flash "hello"
-
-# AWS Bedrock
-AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... occ -m bedrock/claude-sonnet "hello"
-
-# Google Vertex
-GOOGLE_APPLICATION_CREDENTIALS=... occ -m vertex/claude-sonnet "hello"
+# Else x402 via the local sidecar
+# (empty wallet is a pay wall, not a retry)
 ```
+
+Zoo catalog ids (including names that look like `gpt-*`) still POST `${ANTHROPIC_BASE_URL}/messages` with Bearer. Do not route them to OpenAI/Google keys.
 
 ---
 

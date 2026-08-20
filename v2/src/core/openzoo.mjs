@@ -89,6 +89,77 @@ export function subscriptionFile(home = os.homedir(), env = process.env) {
     return env.OPENZOO_SUBSCRIPTION_PATH || path.join(home, '.openzoo', 'subscription.json');
 }
 
+function titleCase(id) {
+    const s = String(id || '').trim();
+    if (!s) return '';
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
+ * Persist a subscription key (chmod 600). Never log the value.
+ * Same on-disk shape as OpenZoo `subscription.js`.
+ */
+export function saveSubscription(rec, {
+    home = os.homedir(),
+    env = process.env,
+    writeFile = fs.writeFileSync,
+    mkdir = fs.mkdirSync,
+    rename = fs.renameSync,
+    chmod = fs.chmodSync,
+} = {}) {
+    const key = String(rec?.key || '').trim();
+    if (!key) return null;
+    const file = subscriptionFile(home, env);
+    const payload = {
+        key,
+        tier: rec.tier ? String(rec.tier) : null,
+        tierName: rec.tierName ? String(rec.tierName) : (rec.tier ? titleCase(rec.tier) : null),
+        sessionId: rec.sessionId ? String(rec.sessionId) : null,
+        savedAt: Date.now(),
+    };
+    mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.tmp`;
+    writeFile(tmp, JSON.stringify(payload), { mode: 0o600 });
+    try { chmod(tmp, 0o600); } catch { /* windows */ }
+    rename(tmp, file);
+    return payload;
+}
+
+export function clearSubscription({
+    home = os.homedir(),
+    env = process.env,
+    unlink = fs.unlinkSync,
+} = {}) {
+    const file = subscriptionFile(home, env);
+    try { unlink(file); } catch { /* already gone */ }
+    return file;
+}
+
+/**
+ * A paste is either the bearer key itself, or the site's success URL
+ * (`/billing/done?session=cs_…`). Handlers stay sync — session URLs
+ * are not fetched here; tell the user to paste the key.
+ */
+export function parseSubscriptionPaste(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return { error: 'empty' };
+    let session = '';
+    try {
+        if (/^https?:\/\//i.test(raw) || raw.includes('session=')) {
+            const url = new URL(raw, BILLING_ORIGIN);
+            session = url.searchParams.get('session') || url.searchParams.get('session_id') || '';
+        }
+    } catch { /* not a URL */ }
+    if (!session) {
+        const m = /(?:session_id|session)=([A-Za-z0-9_]+)/.exec(raw);
+        if (m) session = m[1];
+    }
+    if (session) return { session };
+    if (/^https?:\/\//i.test(raw)) return { error: 'no session in URL' };
+    if (raw.length < 8 || /\s/.test(raw)) return { error: 'not a key' };
+    return { key: raw };
+}
+
 /**
  * Load the Stripe subscription key. Never log the value.
  * @returns {{ key: string, tier?: string, source: string } | null}
@@ -314,6 +385,12 @@ export function bindMessagesForSend(messages, { tokenGate = 2000, estimate } = {
     return kept;
 }
 
+export function messagesWereBound(original, bound) {
+    if (!Array.isArray(original) || !Array.isArray(bound)) return false;
+    if (bound.length !== original.length) return true;
+    return bound[0]?.content === '[bound prefix — zoo spill]';
+}
+
 const CLASSIFIER_MAX_TOKENS = 64;
 
 /**
@@ -439,9 +516,10 @@ export function parseSpillHeaders(headers) {
     return { corpusChars: corpus, sentChars: sent, bound };
 }
 
-export function bindTokenGate(sessionMultiple) {
-    // When the green HUD multiple is under 5, bind/spill at 2k tokens.
-    if (sessionMultiple == null || sessionMultiple < 5) return 2000;
+export function bindTokenGate(sessionMultiple, { auto = false } = {}) {
+    // Thin HUD / Auto: bind at 2k, not a ~16k prefix gate.
+    // Same cut OpenZoo decideChatSpill uses when auto or dollarX < 5.
+    if (auto || sessionMultiple == null || sessionMultiple < 5) return 2000;
     return 16000;
 }
 
@@ -452,12 +530,22 @@ export function createSpillHud() {
         corpusChars: 0,
         sentChars: 0,
         lastMultiple: null,
+        clientBound: false,
+        /** Paint spilled × as soon as the client binds — do not wait for headers. */
+        markBound() {
+            this.clientBound = true;
+            if (this.spilledCalls < 1) this.spilledCalls = 1;
+            return this;
+        },
         note(headers, fallbackSent = 0) {
             const parsed = parseSpillHeaders(headers);
             const sent = parsed.sentChars || fallbackSent;
             const corpus = parsed.corpusChars;
             this.calls += 1;
-            if (parsed.bound || corpus > 0) this.spilledCalls += 1;
+            const headerBound = parsed.bound || corpus > 0;
+            if (headerBound || this.clientBound) {
+                this.spilledCalls = Math.max(this.spilledCalls, headerBound ? this.calls : 1);
+            }
             this.corpusChars += corpus;
             this.sentChars += sent;
             this.lastMultiple = spillMultiple({ corpusChars: corpus, sentChars: sent });
@@ -470,7 +558,9 @@ export function createSpillHud() {
             const session = this.sessionMultiple();
             const parts = [];
             if (session != null) parts.push(`${session.toFixed(2)}× session`);
-            if (this.spilledCalls > 0) parts.push(`spilled ×${this.spilledCalls}`);
+            if (this.spilledCalls > 0 || this.clientBound) {
+                parts.push(`spilled ×${Math.max(this.spilledCalls, 1)}`);
+            }
             return parts.join(' · ');
         },
     };

@@ -20,6 +20,7 @@ import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
 import { renderMarkdown } from './markdown.mjs';
+import { looksLikeToolJsonDump, sanitizeAssistantCanvas } from '../core/savings.mjs';
 
 const h = React.createElement;
 
@@ -85,10 +86,13 @@ export function StatusBar({ model, tokens, cost, mode, startTime, contextMax, sp
 
 // ---- Message Components ----
 
-export function Message({ role, content, toolName, toolResult, toolStatus, thinking }) {
+export function Message({ role, content, toolName, toolResult, toolStatus, thinking, expanded }) {
     if (role === 'assistant') return h(AssistantMessage, { content });
     if (role === 'tool') return h(ToolMessage, { name: toolName, result: toolResult, status: toolStatus });
-    if (role === 'thinking') return h(ThinkingMessage, { content: thinking, expanded: process.env.SHOW_THINKING === '1' });
+    if (role === 'thinking') {
+        const open = expanded === true || process.env.SHOW_THINKING === '1';
+        return h(ThinkingMessage, { content: thinking, expanded: open });
+    }
     if (role === 'user') return h(UserMessage, { content });
     if (role === 'error') return h(ErrorMessage, { content });
     if (role === 'system') return h(SystemMessage, { content });
@@ -96,8 +100,9 @@ export function Message({ role, content, toolName, toolResult, toolStatus, think
 }
 
 export function AssistantMessage({ content }) {
-    if (!content) return null;
-    const rendered = renderMarkdown(content);
+    const text = sanitizeAssistantCanvas(content);
+    if (!text) return null;
+    const rendered = renderMarkdown(text);
     return h(Box, { marginLeft: 0, marginBottom: 0 },
         h(Text, null, rendered),
     );
@@ -124,9 +129,9 @@ export function ToolMessage({ name, result, status }) {
             ),
         );
     }
-    if (status === 'done' && result) {
+    if (status === 'done' && result && !looksLikeToolJsonDump(result)) {
         children.push(
-            h(Text, { color: 'gray', key: 'result' }, ' ', truncate(String(result), 200)),
+            h(Text, { color: 'gray', key: 'result' }, ' ', truncate(String(result), 80)),
         );
     }
     if (status === 'error' && result) {
@@ -146,7 +151,7 @@ export function ThinkingMessage({ content, expanded }) {
     }
     if (!expanded) {
         return h(Box, null,
-            h(Text, { dimColor: true, italic: true }, 'thinking… (folded — SHOW_THINKING=1 to expand)'),
+            h(Text, { dimColor: true, italic: true }, 'thinking… (folded — Ctrl+T / /think to expand)'),
         );
     }
     return h(Box, null,

@@ -30,6 +30,7 @@ import {
     pickDefaultModel,
     resolveApiModel,
 } from './core/openzoo.mjs';
+import { isElectronAsNode } from './core/electron.mjs';
 import { sanitizeAssistantCanvas } from './core/savings.mjs';
 import {
     assistantMessage,
@@ -65,6 +66,10 @@ async function main() {
     // without the openzoo wrapper. Payment is not a boot gate.
     const zoo = await detectAndApplyZooEnv(process.env);
     delete process.env.ANTHROPIC_API_KEY;
+    if (isElectronAsNode()) {
+        // Already running as this .mjs under Electron execPath — do not spawn `node`.
+        process.env.ELECTRON_RUN_AS_NODE = process.env.ELECTRON_RUN_AS_NODE || '1';
+    }
 
     const args = parseArgs(rawArgv);
 
@@ -191,6 +196,23 @@ async function main() {
     loop.state._checkpointManager = checkpointManager;
     loop.state._promptCache = promptCache;
     loop.state._zooCatalog = catalog;
+    loop.state._settings = settings;
+    loop.state._autoRace = Boolean(settings.autoRace);
+
+    if (args.appendSystemPrompt) {
+        loop.state.systemPrompt = `${loop.state.systemPrompt || ''}\n\n${args.appendSystemPrompt}`;
+    }
+
+    // New chats stay isolated. --resume is the only auto-load of session.json.
+    if (args.resume) {
+        sessionManager.resume(loop.state);
+    }
+
+    if (!catalog.length) {
+        fetchZooModels().then((ids) => {
+            if (ids?.length) loop.state._zooCatalog = ids;
+        }).catch(() => {});
+    }
 
     telemetry.track('session.start', { model: loop.state.model });
 

@@ -8,7 +8,7 @@
 import readline from 'readline';
 import { executeCommand, getCompletions, COMMANDS } from './commands.mjs';
 import { Spinner, highlightCode, renderStatusBar, renderToolProgress } from './ink-app.mjs';
-import { sanitizeAssistantCanvas } from '../core/savings.mjs';
+import { persistUserTurn, sanitizeAssistantCanvas } from '../core/savings.mjs';
 
 /**
  * Start the interactive REPL.
@@ -69,7 +69,14 @@ export async function startRepl(loop, settings) {
                 return;
             }
 
-            // Run through agent loop
+            // Persist BEFORE spinner/paint or API call — refresh must not forget the turn.
+            const last = loop.state.messages[loop.state.messages.length - 1];
+            if (!(last?.role === 'user' && last.content === trimmed)) {
+                loop.state.messages.push({ role: 'user', content: trimmed });
+                loop.state.turnCount = (loop.state.turnCount || 0) + 1;
+            }
+            persistUserTurn(loop.state._sessionManager, loop.state);
+
             const spinner = new Spinner('Thinking...');
             spinner.start();
 

@@ -10,12 +10,14 @@ import {
     bindMessagesForSend,
     bindTokenGate,
     classifyRaceWinner,
+    isZooBase,
     compactDisabled,
     createSpillHud,
     isAutoModel,
     isPaymentError,
     messagesUrl,
     paymentErrorFromResponse,
+    messagesWereBound,
     pickRaceCandidates,
     raceFirstX,
     resolveApiModel,
@@ -313,7 +315,10 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
     return { run, state, persist: () => sessionManager?.save(state) };
 }
 
-function detectProvider(model) {
+export function detectProvider(model, env = process.env) {
+    // Zoo product path: every catalog id POSTs ${BASE_URL}/messages. gpt-* /
+    // gemini ids from OpenRouter must not take the OpenAI/Google key lanes.
+    if (isZooBase(env.ANTHROPIC_BASE_URL) || !env.ANTHROPIC_BASE_URL) return 'anthropic';
     if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3')) return 'openai';
     if (model.startsWith('gemini')) return 'google';
     return 'anthropic';
@@ -367,18 +372,31 @@ export async function callAnthropic(model, state, toolDefs, settings, stream, de
         body.thinking = { type: 'enabled', budget_tokens: settings.thinkingBudget || 10000 };
     }
 
-    const bindAt = bindTokenGate(state._spillHud?.sessionMultiple?.());
+    const wantRace = !deps._racing && (
+        settings.autoRace ||
+        state?._autoRace ||
+        isAutoModel(model) ||
+        isAutoModel(state?.model)
+    );
+    const bindAt = bindTokenGate(state._spillHud?.sessionMultiple?.(), { auto: wantRace });
     headers['x-openzoo-bind-tokens'] = String(bindAt);
+    const dollarX = state._spillHud?.sessionMultiple?.();
+    if (dollarX != null) headers['x-openzoo-dollar-x'] = String(dollarX);
+
+    const boundMessages = bindMessagesForSend(state.messages, {
+        tokenGate: bindAt,
+        estimate: (m) => state._contextManager ? state._contextManager.getTokenCount(m) : Math.ceil(JSON.stringify(m || []).length / 4),
+    });
+    if (state?._spillHud && messagesWereBound(state.messages, boundMessages)) {
+        state._spillHud.markBound();
+    }
 
     const outbound = {
         ...body,
-        messages: bindMessagesForSend(state.messages, {
-            tokenGate: bindAt,
-            estimate: (m) => state._contextManager ? state._contextManager.getTokenCount(m) : Math.ceil(JSON.stringify(m || []).length / 4),
-        }),
+        messages: boundMessages,
     };
 
-    if (settings.autoRace && !deps._racing) {
+    if (wantRace) {
         const catalog = deps.catalog || state._zooCatalog || [];
         const candidates = pickRaceCandidates(catalog, settings.raceY || 3);
         if (candidates.length > 1) {
@@ -386,7 +404,20 @@ export async function callAnthropic(model, state, toolDefs, settings, stream, de
                 firstX: settings.raceX || 2,
                 bar: settings.raceBar || 0.7,
                 runOne: (m) => callAnthropic(m, state, toolDefs, { ...settings, autoRace: false, stream: false }, false, { ...deps, _racing: true, catalog }),
-                classify: (replies, meta) => classifyRaceWinner(replies, { ...meta, catalog }),
+                classify: (replies, meta) => classifyRaceWinner(replies, {
+                    ...meta,
+                    catalog,
+                    classifyFetch: async ({ model: clfModel, max_tokens, messages }) => {
+                        return callAnthropic(
+                            clfModel,
+                            { messages, systemPrompt: '', _spillHud: state._spillHud },
+                            [],
+                            { ...settings, autoRace: false, stream: false, maxTokens: max_tokens || 64, thinking: false },
+                            false,
+                            { ...deps, _racing: true, catalog, _classify: true },
+                        );
+                    },
+                }),
             });
             const picked = raced.replies.find(r => r.model === raced.winner) || raced.replies[raced.replies.length - 1];
             if (state) state.model = raced.winner;

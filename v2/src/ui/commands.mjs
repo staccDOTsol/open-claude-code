@@ -5,12 +5,24 @@
  * Commands are invoked via /command-name in the REPL.
  */
 
+import { execFileSync, execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 import { SessionManager } from '../core/session.mjs';
 import { CheckpointManager } from '../core/checkpoints.mjs';
 import { PromptCache } from '../core/cache.mjs';
 import { readEnv, listEnvVars } from '../config/env.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 import { OutcomeStore } from '../optimize/store.mjs';
+import { cronStore } from '../tools/cron-create.mjs';
+import {
+    BILLING_ORIGIN,
+    clearSubscription,
+    isAutoModel,
+    parseSubscriptionPaste,
+    saveSubscription,
+    subscriptionPublicView,
+} from '../core/openzoo.mjs';
 
 const checkpoints = new CheckpointManager();
 const promptCache = new PromptCache();
@@ -91,18 +103,10 @@ export const COMMANDS = {
         description: 'Show token usage and estimated cost',
         handler(args, state) {
             const { input, output } = state.tokenUsage;
-            // Use model-appropriate pricing
-            const model = state.model || '';
-            let priceIn = 3, priceOut = 15; // Sonnet default
-            if (model.includes('haiku')) { priceIn = 0.25; priceOut = 1.25; }
-            if (model.includes('opus')) { priceIn = 15; priceOut = 75; }
-
-            const costIn = (input / 1_000_000) * priceIn;
-            const costOut = (output / 1_000_000) * priceOut;
-            const total = costIn + costOut;
+            const hud = state._spillHud?.format?.() || '';
             return [
                 `Token usage: input=${input}, output=${output}`,
-                `Estimated cost: $${total.toFixed(4)} (in: $${costIn.toFixed(4)}, out: $${costOut.toFixed(4)})`,
+                hud ? `Spill HUD: ${hud}` : 'Spill HUD: (no bind yet)',
                 `Model: ${state.model || 'default'}`,
                 `Turns: ${state.turnCount}`,
             ].join('\n');
@@ -138,12 +142,19 @@ export const COMMANDS = {
     '/fast': {
         description: 'Toggle fast mode (uses faster, cheaper model)',
         handler(args, state) {
-            if (state.model?.includes('haiku')) {
-                state.model = 'claude-sonnet-4-6';
-                return 'Fast mode OFF — using claude-sonnet-4-6';
+            const catalog = state?._zooCatalog || [];
+            const cheap = catalog.find(m => /haiku|mini|flash|lightning|small|nano/i.test(m) && !/opus/i.test(m));
+            const normal = catalog.find(m => /sonnet|fable/i.test(m) && !/opus/i.test(m)) || catalog[0];
+            if (state.model && /haiku|mini|flash|lightning|small|nano/i.test(state.model)) {
+                state.model = normal || 'openzoo-claude-sonnet';
+                state._autoRace = false;
+                if (state._settings) state._settings.autoRace = false;
+                return `Fast mode OFF — using ${state.model}`;
             }
-            state.model = 'claude-haiku-4-5';
-            return 'Fast mode ON — using claude-haiku-4-5';
+            state.model = cheap || 'openzoo-haiku';
+            state._autoRace = false;
+            if (state._settings) state._settings.autoRace = false;
+            return `Fast mode ON — using ${state.model} (haiku-class)`;
         },
     },
 
@@ -153,25 +164,25 @@ export const COMMANDS = {
             const catalog = state?._zooCatalog || [];
             if (args && args !== 'list') {
                 const id = String(args).trim();
-                const auto = !id || id.toLowerCase() === 'auto' || id === 'openzoo/auto';
-                if (auto) {
-                    const pick = catalog.find(m => /sonnet|fable/i.test(m) && !/opus/i.test(m)) || catalog[0];
-                    if (pick) {
-                        state.model = pick;
-                        return `Auto resolved to: ${pick}`;
-                    }
-                    return 'No zoo catalog yet — start the sidecar on :8402 and retry /model.';
+                if (isAutoModel(id)) {
+                    state.model = 'auto';
+                    state._autoRace = true;
+                    if (state._settings) state._settings.autoRace = true;
+                    return 'Auto: cheap race (first X of Y). Never sending openzoo/auto.';
                 }
                 state.model = id;
+                state._autoRace = false;
+                if (state._settings) state._settings.autoRace = false;
                 return `Model switched to: ${id}`;
             }
-            const lines = [`Current model: ${state.model || 'default'}`];
+            const race = state._autoRace || state._settings?.autoRace ? ' (cheap race)' : '';
+            const lines = [`Current model: ${state.model || 'default'}${race}`];
             if (catalog.length) {
                 lines.push(`Zoo catalog (${catalog.length}):`);
                 for (const id of catalog.slice(0, 80)) lines.push(`  ${id}`);
                 if (catalog.length > 80) lines.push(`  … ${catalog.length - 80} more`);
             } else {
-                lines.push('Zoo catalog unavailable (is :8402 up?).');
+                lines.push('Zoo catalog unavailable (is :8402 up?). Catalog loads at boot from GET /v1/models.');
             }
             return lines.join('\n');
         },
@@ -214,7 +225,7 @@ export const COMMANDS = {
     '/bug': {
         description: 'Report a bug',
         handler() {
-            return 'Report bugs at: https://github.com/ruvnet/open-claude-code/issues';
+            return 'Report bugs at: https://github.com/staccDOTsol/open-claude-code/issues';
         },
     },
 
@@ -222,7 +233,6 @@ export const COMMANDS = {
         description: 'Review recent changes',
         handler(args, state) {
             try {
-                const { execSync } = require('child_process');
                 const diff = execSync('git diff --stat HEAD~1 2>/dev/null || echo "No git history"', { encoding: 'utf-8' });
                 return `Recent changes:\n${diff}`;
             } catch {
@@ -234,8 +244,6 @@ export const COMMANDS = {
     '/init': {
         description: 'Initialize Claude Code in current directory',
         handler() {
-            const fs = require('fs');
-            const path = require('path');
             const claudeDir = path.join(process.cwd(), '.claude');
             fs.mkdirSync(claudeDir, { recursive: true });
             const settingsFile = path.join(claudeDir, 'settings.json');
@@ -247,21 +255,38 @@ export const COMMANDS = {
     },
 
     '/login': {
-        description: 'Set API key',
+        description: 'Save OpenZoo subscription key (never ANTHROPIC_API_KEY)',
         handler(args) {
-            if (args) {
-                process.env.ANTHROPIC_API_KEY = args;
-                return 'API key set.';
+            delete process.env.ANTHROPIC_API_KEY;
+            if (!args) {
+                return `Usage: /login <subscription-key>\nGet a key at ${BILLING_ORIGIN} — never paste an Anthropic API key.`;
             }
-            return 'Usage: /login <api-key>';
+            const parsed = parseSubscriptionPaste(args);
+            if (parsed.session) {
+                return `That looks like a checkout session, not the key. Open ${BILLING_ORIGIN} and paste the subscription key.`;
+            }
+            if (parsed.error || !parsed.key) {
+                return `Not a subscription key. Paste the key from ${BILLING_ORIGIN}.`;
+            }
+            saveSubscription({ key: parsed.key });
+            process.env.ANTHROPIC_AUTH_TOKEN = parsed.key;
+            process.env.OPENZOO_SUBSCRIPTION_KEY = parsed.key;
+            delete process.env.ANTHROPIC_API_KEY;
+            const view = subscriptionPublicView();
+            return view.label
+                ? `Subscription saved (${view.label}). ANTHROPIC_API_KEY stays unset.`
+                : 'Subscription saved. ANTHROPIC_API_KEY stays unset.';
         },
     },
 
     '/logout': {
-        description: 'Clear API key',
+        description: 'Clear OpenZoo subscription (API key stays unset)',
         handler() {
+            clearSubscription();
+            delete process.env.ANTHROPIC_AUTH_TOKEN;
+            delete process.env.OPENZOO_SUBSCRIPTION_KEY;
             delete process.env.ANTHROPIC_API_KEY;
-            return 'API key cleared.';
+            return 'Subscription cleared. ANTHROPIC_API_KEY stays unset.';
         },
     },
 
@@ -424,7 +449,6 @@ export const COMMANDS = {
     '/schedule': {
         description: 'List scheduled tasks',
         handler() {
-            const { cronStore } = require('../tools/cron-create.mjs');
             if (!cronStore || cronStore.size === 0) return 'No scheduled tasks.';
             const lines = [];
             for (const [, job] of cronStore) {
@@ -461,7 +485,6 @@ export const COMMANDS = {
         description: 'Show git diff',
         handler() {
             try {
-                const { execSync } = require('child_process');
                 return execSync('git diff --stat 2>/dev/null || echo "Not in a git repo"', { encoding: 'utf-8' });
             } catch {
                 return 'Unable to show diff.';
@@ -484,8 +507,7 @@ export const COMMANDS = {
                 // Security: use execFileSync with discrete args so the commit
                 // message is never shell-interpolated (prevents injection via
                 // crafted message strings containing shell metacharacters).
-                const { execFileSync } = require('child_process');
-                const msg = args || 'Update from open-claude-code';
+                const msg = args || 'Update from openzoo-claude';
                 execFileSync('git', ['add', '-A'], { encoding: 'utf-8' });
                 execFileSync('git', ['commit', '-m', msg], { encoding: 'utf-8' });
                 return `Committed: ${msg}`;

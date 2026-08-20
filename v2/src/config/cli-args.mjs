@@ -33,6 +33,8 @@ export function parseArgs(args) {
         showVersion: false,
         showHelp: false,
         print: false,
+        resume: null,
+        appendSystemPrompt: null,
         // Opt-in metaharness self-optimization. null = unset (defer to env/setting).
         selfOptimize: null,
     };
@@ -70,6 +72,20 @@ export function parseArgs(args) {
             case '--system-prompt':
                 result.systemPrompt = args[++i];
                 break;
+
+            case '--append-system-prompt':
+                result.appendSystemPrompt = args[++i];
+                break;
+
+            case '--resume': {
+                const next = args[i + 1];
+                if (next && !next.startsWith('-')) {
+                    result.resume = args[++i];
+                } else {
+                    result.resume = true;
+                }
+                break;
+            }
 
             case '--add-dir':
                 result.addDirs.push(args[++i]);
@@ -154,6 +170,9 @@ Options:
   --output-format <fmt>      Output format: text, json, stream-json
                              stream-json emits official Claude Code NDJSON
   --system-prompt <text>     Override system prompt
+  --append-system-prompt <text>
+                             Append to the system prompt (grokui Auto)
+  --resume [session-id]      Resume the last saved session (new chats stay isolated)
   --add-dir <dir>            Additional directory to search for CLAUDE.md
   --max-turns <n>            Maximum conversation turns
   --allowedTools <tools>     Comma-separated list of allowed tools

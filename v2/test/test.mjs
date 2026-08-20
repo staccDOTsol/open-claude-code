@@ -2094,11 +2094,17 @@ section('OpenZoo: env, auth, catalog, savings');
         parseSpillHeaders,
         paymentErrorFromResponse,
         bindMessagesForSend,
+        bindTokenGate,
         pickClassifierModel,
         pickRaceCandidates,
         raceFirstX,
         classifyRaceWinnerHeuristic,
+        createSpillHud,
+        parseSubscriptionPaste,
+        messagesWereBound,
     } = await import('../src/core/openzoo.mjs');
+    const { detectProvider } = await import('../src/core/agent-loop.mjs');
+    const { isElectronAsNode, runtimeExecPath } = await import('../src/core/electron.mjs');
     const {
         rewriteFindCommand,
         rejectHarnessBash,
@@ -2231,6 +2237,11 @@ section('OpenZoo: env, auth, catalog, savings');
     assertEqual(printArgs.prompt, 'hi', 'prompt is positional');
     const skip = parseArgs(['--dangerously-skip-permissions', '-p', 'x']);
     assertEqual(skip.permissionMode, 'bypassPermissions', '--dangerously-skip-permissions aliases bypass');
+    const grokuiArgs = parseArgs(['--append-system-prompt', 'you are auto', '--resume', 'sess_1']);
+    assertEqual(grokuiArgs.appendSystemPrompt, 'you are auto', '--append-system-prompt is accepted');
+    assertEqual(grokuiArgs.resume, 'sess_1', '--resume takes a session id');
+    const resumeBare = parseArgs(['--resume']);
+    assertEqual(resumeBare.resume, true, '--resume without id is boolean');
 
     const init = systemInit({ sessionId: 's1', model: 'zoo-sonnet', tools: [{ name: 'Bash' }] });
     assertEqual(init.type, 'system', 'stream-json init type');
@@ -2291,6 +2302,80 @@ section('OpenZoo: env, auth, catalog, savings');
     assertEqual(clearState.messages.length, 0, 'new chat clears messages');
     assert(clearState._sessionManager.sessionId !== oldId, 'new chat gets a new session id');
     assertIncludes(cleared, 'isolated', 'clear isolates prior thread');
+
+    const hud = createSpillHud();
+    hud.markBound();
+    assertIncludes(hud.format(), 'spilled', 'HUD paints spilled × once anything is bound');
+    assertEqual(bindTokenGate(10, { auto: true }), 2000, 'Auto bind/spill gate is 2k');
+    assertEqual(bindTokenGate(10), 16000, 'thick HUD keeps 16k gate');
+    const longMsgs = Array.from({ length: 12 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(400) }));
+    const boundMsgs = bindMessagesForSend(longMsgs, { tokenGate: 2000 });
+    assert(messagesWereBound(longMsgs, boundMsgs), 'messagesWereBound detects client bind');
+
+    assertEqual(detectProvider('gpt-4o', { ANTHROPIC_BASE_URL: 'http://localhost:8402/v1' }), 'anthropic', 'zoo catalog gpt-* stays on Messages');
+    assertEqual(isElectronAsNode({ ELECTRON_RUN_AS_NODE: '1' }, {}), true, 'ELECTRON_RUN_AS_NODE is detected');
+    assertEqual(typeof runtimeExecPath(), 'string', 'runtime execPath is this process');
+
+    const pasteKey = parseSubscriptionPaste('sk-openzoo-sub-123456');
+    assertEqual(pasteKey.key, 'sk-openzoo-sub-123456', 'subscription paste is a key');
+    assert(parseSubscriptionPaste('https://zoo.openzoo.fun/billing/done?session=cs_test').session, 'billing URL is not treated as a key');
+
+    const subPath = `/tmp/occ-sub-test-${Date.now()}.json`;
+    const prevSubPath = process.env.OPENZOO_SUBSCRIPTION_PATH;
+    const prevApiLogin = process.env.ANTHROPIC_API_KEY;
+    const prevAuthLogin = process.env.ANTHROPIC_AUTH_TOKEN;
+    process.env.OPENZOO_SUBSCRIPTION_PATH = subPath;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-must-not-stick';
+    const loginOut = COMMANDS['/login'].handler('sk-zoo-subscription-key-xyz', {});
+    assertEqual(process.env.ANTHROPIC_API_KEY, undefined, '/login never sets ANTHROPIC_API_KEY');
+    assertEqual(process.env.ANTHROPIC_AUTH_TOKEN, 'sk-zoo-subscription-key-xyz', '/login sets AUTH_TOKEN to the zoo bearer');
+    assert(!/sk-zoo-subscription-key-xyz/.test(loginOut), '/login does not echo the key');
+    assertIncludes(loginOut, 'unset', '/login says API key stays unset');
+    COMMANDS['/logout'].handler('');
+    assertEqual(process.env.ANTHROPIC_API_KEY, undefined, '/logout leaves API key unset');
+    if (prevSubPath === undefined) delete process.env.OPENZOO_SUBSCRIPTION_PATH;
+    else process.env.OPENZOO_SUBSCRIPTION_PATH = prevSubPath;
+    if (prevApiLogin === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevApiLogin;
+    if (prevAuthLogin === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+    else process.env.ANTHROPIC_AUTH_TOKEN = prevAuthLogin;
+
+    const autoState = { model: 'test-model', _zooCatalog: ['openzoo-haiku', 'openzoo-sonnet'], _settings: {} };
+    const autoOut = COMMANDS['/model'].handler('auto', autoState);
+    assertEqual(autoState.model, 'auto', '/model auto stays Auto, not a single catalog pin');
+    assertEqual(autoState._autoRace, true, '/model auto enables cheap race');
+    assertEqual(autoState._settings.autoRace, true, '/model auto sets settings.autoRace');
+    assertIncludes(autoOut, 'openzoo/auto', '/model auto promises not to send openzoo/auto');
+
+    const seenBodies = [];
+    const raceFetch = async (_url, init) => {
+        const body = JSON.parse(init.body);
+        seenBodies.push(body);
+        return {
+            ok: true,
+            status: 200,
+            headers: { get: (k) => (k === 'x-hrr-corpus-chars' ? '8000' : k === 'x-hrr-sent-chars' ? '1000' : null) },
+            json: async () => ({
+                content: [{ type: 'text', text: `reply from ${body.model} ${'word '.repeat(50)}` }],
+                usage: {},
+            }),
+            text: async () => '',
+        };
+    };
+    const raceState = {
+        messages: [{ role: 'user', content: 'hi' }],
+        _zooCatalog: ['openzoo-haiku', 'openzoo-sonnet'],
+        _autoRace: true,
+        _spillHud: createSpillHud(),
+    };
+    await callAnthropic('auto', raceState, [], { autoRace: true, stream: false, raceY: 2, raceX: 2 }, false, {
+        fetch: raceFetch,
+        catalog: ['openzoo-haiku', 'openzoo-sonnet'],
+        env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8402/v1', ANTHROPIC_AUTH_TOKEN: 'sk-openzoo' },
+    });
+    assert(!seenBodies.some(b => b.model === 'openzoo/auto'), 'live race never sends openzoo/auto');
+    assert(seenBodies.some(b => b.max_tokens === 64 && !/opus/i.test(b.model)), 'live classifier is cheap + tiny max_tokens');
+    assertIncludes(raceState._spillHud.format(), 'spilled', 'live bind/spill HUD reports spilled ×');
 
     if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = prevKey;
