@@ -361,6 +361,53 @@ export function bindTokenGate(sessionMultiple) {
     return 16000;
 }
 
+export async function fetchZooInfo({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
+    const base = (env.ANTHROPIC_BASE_URL || ZOO_LOCAL_BASE).replace(/\/$/, '');
+    try {
+        const res = await fetchImpl(`${base}/info`, { signal: AbortSignal.timeout(1500) });
+        if (!res.ok) return null;
+        return await res.json();
+    } catch {
+        return null;
+    }
+}
+
+/** Same HUD `openzoo claude` used to inject into Claude Code's statusLine. */
+export function formatZooStatusLine(j = {}) {
+    if (!j || typeof j !== 'object') return '\u25cf openzoo  \u00b7 x402';
+    const sp = j.spilled || {};
+    const tk = Number(sp.tokensApprox) || 0;
+    const ht = tk >= 1e6 ? (tk / 1e6).toFixed(1) + 'M' : tk >= 1e3 ? Math.round(tk / 1e3) + 'k' : String(tk);
+    const paid = Number(j.paidCalls) || 0;
+    const sc = Number(sp.calls) || 0;
+    const fb = Number(sp.fileBinds) || 0;
+    const rb = Number(sp.reusedBinds) || 0;
+    const ls = sp.lastSend || {};
+    const bits = [];
+    bits.push(`spilled ${sc}/${paid} calls`);
+    if (rb) bits.push(`${rb} reused`);
+    bits.push(`${fb} filebind`);
+    if (ls.sent != null && ls.msgs != null) bits.push(`sending ${ls.sent}/${ls.msgs}`);
+    if (tk) bits.push(`${ht} tok offloaded`);
+    const spill = bits.length ? ('  \u00b7 ' + bits.join('  \u00b7 ')) : '';
+    const cr = (j.creditUsd == null) ? '' : (`  \u00b7 $${Number(j.creditUsd).toFixed(2)} credit`);
+    const sx = Number(j.savingX);
+    const sv = Number((j.spilled || {}).savedUsd ?? j.savedUsd) || 0;
+    const sx2 = Number(sp.savingX);
+    const on = (Number.isFinite(sx2) && sx2 > 0) ? sx2 : sx;
+    const lbl = (Number.isFinite(sx2) && sx2 > 0) ? 'x on spilled' : 'x vs direct';
+    const save = (on == null || !Number.isFinite(on)) ? '' : (`  \u00b7 ${on.toFixed(4)}${lbl}` + (sv > 0 ? (` ($${sv.toFixed(4)} saved)`) : ''));
+    const ac = j.actual || {};
+    const real = (ac.calls > 0) ? (`  \u00b7 $${Number(ac.upstreamUsd || 0).toFixed(4)} real` + (ac.markupX ? (` (${ac.markupX}x)`) : '')) : '';
+    return `\u25cf openzoo  $${(Number(j.spendUsd) || 0).toFixed(4)}  ${paid} call${paid === 1 ? '' : 's'}${save}${real}${spill}${cr}  \u00b7 x402`;
+}
+
+export function displayModelLabel(model) {
+    const id = String(model || '');
+    if (!id || isAutoModel(id)) return 'Auto';
+    return id;
+}
+
 export function createSpillHud() {
     return {
         calls: 0,

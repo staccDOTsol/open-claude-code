@@ -1,3 +1,4 @@
+import { fetchZooInfo, formatZooStatusLine, displayModelLabel } from '../core/openzoo.mjs';
 /**
  * Ink-like Terminal UI — rich terminal output without heavy dependencies.
  *
@@ -153,21 +154,9 @@ export function renderToolProgress(toolName, status) {
 export function renderStatusBar(state) {
     if (noColor || !process.stderr.isTTY) return '';
     const cols = process.stdout.columns || 80;
-    const model = state.model || 'default';
-    const inp = state.tokenUsage?.input || 0;
-    const out = state.tokenUsage?.output || 0;
-    const tokens = `in:${inp} out:${out}`;
-    const turns = `turn:${state.turnCount || 0}`;
-
-    // Cost estimate (Sonnet pricing by default)
-    const costIn = (inp / 1_000_000) * 3;
-    const costOut = (out / 1_000_000) * 15;
-    const cost = `$${(costIn + costOut).toFixed(4)}`;
-
-    const spill = state._spillHud?.format?.() || '';
-    const right = spill
-        ? `${model} | ${spill} | ${tokens} | ${turns}`
-        : `${model} | ${tokens} | ${cost} | ${turns}`;
+    const model = displayModelLabel(state.model);
+    const zoo = state._zooStatusLine || formatZooStatusLine(state._zooInfo || {});
+    const right = `${model} | ${zoo}`;
     const padding = Math.max(0, cols - right.length - 1);
     return c('dim', `${' '.repeat(padding)}${right}`);
 }

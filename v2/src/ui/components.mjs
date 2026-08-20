@@ -20,6 +20,7 @@ import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
 import { renderMarkdown } from './markdown.mjs';
+import { fetchZooInfo, formatZooStatusLine, displayModelLabel } from '../core/openzoo.mjs';
 
 const h = React.createElement;
 
@@ -54,6 +55,7 @@ function formatCost(cost) {
 
 export function StatusBar({ model, tokens, cost, mode, startTime, contextMax, spillLabel }) {
     const [elapsed, setElapsed] = useState(0);
+    const [zooLine, setZooLine] = useState('\u25cf openzoo  \u00b7 x402');
 
     useEffect(() => {
         const interval = setInterval(() => {
@@ -61,6 +63,18 @@ export function StatusBar({ model, tokens, cost, mode, startTime, contextMax, sp
         }, 1000);
         return () => clearInterval(interval);
     }, [startTime]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const tick = async () => {
+            const info = await fetchZooInfo();
+            if (cancelled) return;
+            setZooLine(formatZooStatusLine(info || {}));
+        };
+        tick();
+        const interval = setInterval(tick, 2000);
+        return () => { cancelled = true; clearInterval(interval); };
+    }, []);
 
     const totalTokens = (tokens?.input || 0) + (tokens?.output || 0);
     const maxCtx = contextMax || 200000;
@@ -71,13 +85,13 @@ export function StatusBar({ model, tokens, cost, mode, startTime, contextMax, sp
         h(Text, { color: 'cyan', bold: true }, '\u258A '),
         h(Text, { color: 'white' }, 'openzoo-claude'),
         h(Text, { color: 'gray' }, ' \u2502 '),
-        h(Text, { color: 'green' }, model || 'default'),
+        h(Text, { color: 'green' }, displayModelLabel(model)),
         h(Text, { color: 'gray' }, ' \u2502 '),
         h(Text, { color: 'yellow' }, '\u23F1 ', formatDuration(elapsed)),
         h(Text, { color: 'gray' }, ' \u2502 '),
         h(Text, { color: ctxColor }, '\u25CF ', contextPct, '% ctx'),
         h(Text, { color: 'gray' }, ' \u2502 '),
-        h(Text, { color: 'white' }, spillLabel || formatCost(cost || 0)),
+        h(Text, { color: 'yellow' }, zooLine || spillLabel || formatCost(cost || 0)),
         h(Text, { color: 'gray' }, ' \u2502 '),
         h(Text, { color: 'magenta' }, mode || 'default'),
     );
@@ -222,7 +236,7 @@ export function LoadingIndicator({ tool }) {
 export function WelcomeBanner({ model, toolCount }) {
     return h(Box, { flexDirection: 'column', marginBottom: 1 },
         h(Text, { bold: true }, 'openzoo-claude'),
-        h(Text, { dimColor: true }, 'Model: ', model || 'default', ' | Tools: ', toolCount || 0),
+        h(Text, { dimColor: true }, 'Model: ', displayModelLabel(model), ' | Tools: ', toolCount || 0),
         h(Text, { dimColor: true }, 'Type your prompt or /help. Press Ctrl+C to exit.'),
     );
 }
