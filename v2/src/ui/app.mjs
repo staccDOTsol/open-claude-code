@@ -79,7 +79,7 @@ export function App({ agentLoop, settings }) {
             }
         }
 
-        const { response, exit: shouldExit } = executeCommand(text, agentLoop.state);
+        const { response, exit: shouldExit, run } = executeCommand(text, agentLoop.state);
         if (shouldExit) {
             exit();
             return;
@@ -89,6 +89,10 @@ export function App({ agentLoop, settings }) {
         // Sync model if it changed
         if (agentLoop.state.model !== model) {
             setModel(agentLoop.state.model);
+        }
+
+        if (run) {
+            runPrompt(run);
         }
     }, [agentLoop, model, addMessage, exit]);
 

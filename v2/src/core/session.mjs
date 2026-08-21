@@ -49,6 +49,7 @@ export class SessionManager {
             tokenUsage: state.tokenUsage,
             messages: state.messages,
             systemPrompt: state.systemPrompt,
+            goal: state.goal || '',
         };
 
         const filePath = path.join(dir, 'session.json');
@@ -73,6 +74,7 @@ export class SessionManager {
             state.turnCount = session.turnCount || 0;
             state.tokenUsage = session.tokenUsage || { input: 0, output: 0 };
             if (session.model) state.model = session.model;
+            if (typeof session.goal === 'string') state.goal = session.goal;
 
             this.sessionId = session.id;
             this.conversationId = session.conversationId;

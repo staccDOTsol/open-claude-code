@@ -13,6 +13,7 @@
  */
 
 import { execSync } from 'child_process';
+import { isGoalActive } from '../core/goal.mjs';
 
 export class HookEngine {
     /**
@@ -77,13 +78,18 @@ export class HookEngine {
 
     /**
      * Run stop hooks. Returns true if stop should proceed, false to continue.
+     * An active session goal always preventStops so the agent-loop keeps working.
      *
+     * @param {object} [state] - agent loop state (checks state.goal)
      * @returns {Promise<boolean>} whether to allow stopping
      */
-    async runStop() {
+    async runStop(state = {}) {
+        if (isGoalActive(state)) {
+            return false; // preventStop — goal is still active
+        }
         const hooks = this._getHooks('Stop');
         for (const hook of hooks) {
-            const result = await this._executeHook(hook, { event: 'Stop' });
+            const result = await this._executeHook(hook, { event: 'Stop', goal: state?.goal });
             if (result?.preventStop) {
                 return false; // do not stop
             }
