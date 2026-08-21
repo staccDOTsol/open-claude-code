@@ -15,7 +15,7 @@
  */
 
 import React, { useState, useCallback, useRef } from 'react';
-import { render, Box, Text, useInput, useApp } from 'ink';
+import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
 import {
     StatusBar,
@@ -41,6 +41,9 @@ export function App({ agentLoop, settings }) {
     const [toolStatus, setToolStatus] = useState(null);
     const [startTime] = useState(Date.now());
     const loadingRef = useRef(false);
+    // Static writes the banner once. Do not put it in the live tree — the 2s
+    // zoo-status poll on StatusBar must not reprint "openzoo-claude".
+    const welcomeItems = useRef(null);
     const { exit } = useApp();
 
     // Calculate cost from token counts
@@ -79,7 +82,7 @@ export function App({ agentLoop, settings }) {
             }
         }
 
-        const { response, exit: shouldExit } = executeCommand(text, agentLoop.state);
+        const { response, exit: shouldExit, run } = executeCommand(text, agentLoop.state);
         if (shouldExit) {
             exit();
             return;
@@ -89,6 +92,10 @@ export function App({ agentLoop, settings }) {
         // Sync model if it changed
         if (agentLoop.state.model !== model) {
             setModel(agentLoop.state.model);
+        }
+
+        if (run) {
+            runPrompt(run);
         }
     }, [agentLoop, model, addMessage, exit]);
 
@@ -235,6 +242,9 @@ export function App({ agentLoop, settings }) {
     });
 
     const toolCount = agentLoop.state.tools?.list?.()?.length || 0;
+    if (!welcomeItems.current) {
+        welcomeItems.current = [{ id: 'welcome', model, toolCount }];
+    }
 
     // Build the message list
     const messageElements = messages.map((msg, i) =>
@@ -242,8 +252,9 @@ export function App({ agentLoop, settings }) {
     );
 
     return h(Box, { flexDirection: 'column' },
-        // Welcome banner
-        h(WelcomeBanner, { model, toolCount }),
+        h(Static, { items: welcomeItems.current }, (item) =>
+            h(WelcomeBanner, { key: item.id, model: item.model, toolCount: item.toolCount })
+        ),
 
         // Messages area
         h(Box, { flexDirection: 'column', flexGrow: 1 },

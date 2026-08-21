@@ -24,6 +24,13 @@ import { fetchZooInfo, formatZooStatusLine, displayModelLabel } from '../core/op
 
 const h = React.createElement;
 
+/** Ink Box defaults to column — the HUD must stay one wrapping row. */
+export const STATUS_BAR_LAYOUT = {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    width: '100%',
+};
+
 /**
  * Format duration in seconds to human-readable string.
  */
@@ -81,7 +88,7 @@ export function StatusBar({ model, tokens, cost, mode, startTime, contextMax, sp
     const contextPct = Math.min(100, Math.round((totalTokens / maxCtx) * 100));
     const ctxColor = contextPct > 80 ? 'red' : contextPct > 50 ? 'yellow' : 'green';
 
-    return h(Box, null,
+    return h(Box, { ...STATUS_BAR_LAYOUT },
         h(Text, { color: 'cyan', bold: true }, '\u258A '),
         h(Text, { color: 'white' }, 'openzoo-claude'),
         h(Text, { color: 'gray' }, ' \u2502 '),
@@ -119,7 +126,7 @@ export function AssistantMessage({ content }) {
 
 export function UserMessage({ content }) {
     if (!content) return null;
-    return h(Box, { marginBottom: 0 },
+    return h(Box, { flexDirection: 'row', marginBottom: 0 },
         h(Text, { color: 'blue', bold: true }, 'You: '),
         h(Text, null, content),
     );
@@ -149,7 +156,7 @@ export function ToolMessage({ name, result, status }) {
         );
     }
 
-    return h(Box, null, ...children);
+    return h(Box, { flexDirection: 'row' }, ...children);
 }
 
 export function ThinkingMessage({ content, expanded }) {
@@ -169,7 +176,7 @@ export function ThinkingMessage({ content, expanded }) {
 }
 
 export function ErrorMessage({ content }) {
-    return h(Box, null,
+    return h(Box, { flexDirection: 'row' },
         h(Text, { color: 'red', bold: true }, 'Error: '),
         h(Text, { color: 'red' }, content),
     );
@@ -223,7 +230,7 @@ export function PermissionPrompt({ toolName, command }) {
 // ---- Loading Indicator ----
 
 export function LoadingIndicator({ tool }) {
-    return h(Box, null,
+    return h(Box, { flexDirection: 'row' },
         h(Text, { color: 'cyan' },
             h(Spinner, { type: 'dots' }),
         ),

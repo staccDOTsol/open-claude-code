@@ -1,5 +1,5 @@
 /**
- * Slash Commands — all 39 commands from Claude Code.
+ * Slash Commands — Claude Code commands plus /goal.
  *
  * Each command is a function(args, state) that returns a string response.
  * Commands are invoked via /command-name in the REPL.
@@ -11,6 +11,7 @@ import { PromptCache } from '../core/cache.mjs';
 import { readEnv, listEnvVars } from '../config/env.mjs';
 import * as telemetry from '../telemetry/index.mjs';
 import { OutcomeStore } from '../optimize/store.mjs';
+import { clearGoal, isGoalActive, setGoal } from '../core/goal.mjs';
 
 const checkpoints = new CheckpointManager();
 const promptCache = new PromptCache();
@@ -494,6 +495,24 @@ export const COMMANDS = {
         },
     },
 
+    '/goal': {
+        description: 'Set, show, or clear the session goal (keeps the agent working)',
+        handler(args, state) {
+            const trimmed = (args || '').trim();
+            if (!trimmed) {
+                return isGoalActive(state)
+                    ? `Current goal: ${state.goal}`
+                    : 'No goal set.';
+            }
+            if (/^--?clear$/i.test(trimmed) || /^clear$/i.test(trimmed)) {
+                clearGoal(state);
+                return 'Goal cleared.';
+            }
+            setGoal(state, trimmed);
+            return `Goal set: ${state.goal}`;
+        },
+    },
+
     '/optimize': {
         description: 'Self-optimization router status / report (metaharness)',
         handler(args, state) {
@@ -542,7 +561,11 @@ export function executeCommand(input, state) {
     }
 
     const response = command.handler(args, state);
-    return { response, exit: response === 'EXIT' };
+    const result = { response, exit: response === 'EXIT' };
+    if (cmd === '/goal' && isGoalActive(state) && args.trim() && !/^--?clear$/i.test(args.trim())) {
+        result.run = state.goal;
+    }
+    return result;
 }
 
 /**

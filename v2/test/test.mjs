@@ -21,6 +21,7 @@ import { parseAgentDefinition } from '../src/agents/parser.mjs';
 import { SkillsLoader } from '../src/skills/loader.mjs';
 import { SkillRunner } from '../src/skills/runner.mjs';
 import { COMMANDS, executeCommand, getCompletions } from '../src/ui/commands.mjs';
+import { goalContinuationMessage, isGoalActive } from '../src/core/goal.mjs';
 import { Spinner, highlightCode, renderToolProgress, renderStatusBar, renderError } from '../src/ui/ink-app.mjs';
 import { loadSettings, SETTINGS_SCHEMA } from '../src/config/settings.mjs';
 import { readEnv, getEnv, listEnvVars, ENV_SCHEMA } from '../src/config/env.mjs';
@@ -315,6 +316,9 @@ const preventStopHooks = new HookEngine({
     Stop: [{ handler: async () => ({ preventStop: true }) }],
 });
 assert((await preventStopHooks.runStop()) === false, 'Stop hook prevents stopping');
+assert((await emptyHooks.runStop({ goal: 'spawn agents and build X' })) === false, 'Active goal preventStops');
+assert((await emptyHooks.runStop({ goal: '' })) === true, 'Empty goal allows stop');
+assert((await emptyHooks.runStop({})) === true, 'Missing goal allows stop');
 
 // Notification hooks (fire and forget)
 const notifyHooks = new HookEngine({
@@ -488,6 +492,21 @@ assert(sessionMgr.clear() === true, 'Clear succeeds');
 const resumeAfterClear = { messages: [], turnCount: 0, tokenUsage: { input: 0, output: 0 } };
 assert(sessionMgr.resume(resumeAfterClear) === false, 'Resume fails after clear');
 
+const goalSession = new SessionManager('/tmp/occ-test-goal-session');
+const goalSaveState = {
+    model: 'test-model',
+    turnCount: 1,
+    tokenUsage: { input: 1, output: 1 },
+    messages: [],
+    systemPrompt: '',
+    goal: 'spawn agents and build X',
+};
+goalSession.save(goalSaveState);
+const goalResume = { messages: [], turnCount: 0, tokenUsage: { input: 0, output: 0 } };
+assert(goalSession.resume(goalResume) === true, 'Resume session with goal');
+assertEqual(goalResume.goal, 'spawn agents and build X', 'Session restores goal');
+goalSession.clear();
+
 // ---------- Checkpoint Manager Tests ----------
 
 section('Checkpoint Manager');
@@ -647,7 +666,7 @@ fs.rmSync(skillDir, { recursive: true, force: true });
 
 // ---------- Slash Commands Tests ----------
 
-section('Slash Commands (39)');
+section('Slash Commands (40)');
 
 const commandCount = Object.keys(COMMANDS).length;
 assert(commandCount >= 38, `Should have >= 38 commands, got ${commandCount}`);
@@ -659,6 +678,7 @@ const expectedCommands = [
     '/effort', '/think', '/plan', '/vim', '/terminal-setup', '/mcp',
     '/permissions', '/hooks', '/agents', '/skills', '/schedule',
     '/extra-usage', '/undo', '/diff', '/listen', '/commit', '/pr', '/release',
+    '/goal',
 ];
 for (const cmd of expectedCommands) {
     assert(COMMANDS[cmd] !== undefined, `Command ${cmd} exists`);
@@ -769,6 +789,9 @@ assert(exitExecResult.exit, 'Quit exits');
 const unknownResult = executeCommand('/nonexistent', cmdState);
 assertIncludes(unknownResult.response, 'Unknown command', 'Unknown command error');
 
+const goalNotUnknown = executeCommand('/goal', cmdState);
+assert(!goalNotUnknown.response.includes('Unknown command'), '/goal is a known command');
+
 // getCompletions
 const completions = getCompletions('/he');
 assert(completions.includes('/help'), 'Tab complete finds /help');
@@ -793,6 +816,20 @@ assertIncludes(toolProgress, 'Bash', 'Tool progress has name');
 
 const statusBar = renderStatusBar({ model: 'test', tokenUsage: { input: 10, output: 5 }, turnCount: 1 });
 assertType(statusBar, 'string', 'Status bar is string');
+
+const hudSrc = fs.readFileSync(new URL('../src/ui/components.mjs', import.meta.url), 'utf-8');
+assert(hudSrc.includes("flexDirection: 'row'"), 'Ink StatusBar is one row, not a column stack');
+assert(hudSrc.includes("flexWrap: 'wrap'"), 'Ink StatusBar wraps instead of stacking fields');
+assert(hudSrc.includes('STATUS_BAR_LAYOUT'), 'StatusBar uses an explicit row layout');
+
+const appSrc = fs.readFileSync(new URL('../src/ui/app.mjs', import.meta.url), 'utf-8');
+assert(appSrc.includes('Static'), 'WelcomeBanner is rendered via Ink Static (once)');
+assert(/Static[\s\S]*WelcomeBanner/.test(appSrc), 'WelcomeBanner is not in the live redraw tree');
+
+const tickStart = hudSrc.indexOf('const tick = async');
+const tickEnd = hudSrc.indexOf('setInterval(tick');
+const tickBlock = tickStart >= 0 && tickEnd > tickStart ? hudSrc.slice(tickStart, tickEnd) : hudSrc;
+assert(!/console\.log/.test(tickBlock), 'zoo-status poll does not console.log the bin name');
 
 const errorMsg = renderError('test error');
 assertIncludes(errorMsg, 'test error', 'Error message content');
@@ -2247,6 +2284,120 @@ section('OpenZoo: env, auth, catalog, savings');
     else process.env.ANTHROPIC_BASE_URL = prevBase;
     if (prevTok === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
     else process.env.ANTHROPIC_AUTH_TOKEN = prevTok;
+}
+
+section('/goal: set/get/clear, preventStop, continuation, cap');
+{
+    const saves = [];
+    const goalState = {
+        messages: [],
+        turnCount: 0,
+        tokenUsage: { input: 0, output: 0 },
+        model: 'test-model',
+        _sessionManager: { save(s) { saves.push({ goal: s.goal }); return 'ok'; } },
+    };
+
+    const none = executeCommand('/goal', goalState);
+    assert(!none.response.includes('Unknown command'), 'Unknown command: /goal is gone');
+    assertIncludes(none.response, 'No goal', '/goal with no args says none');
+    assert(!none.run, '/goal with no args does not start a turn');
+
+    const set = executeCommand('/goal spawn agents and build X', goalState);
+    assertEqual(goalState.goal, 'spawn agents and build X', '/goal sets state.goal');
+    assertIncludes(set.response, 'spawn agents and build X', '/goal confirms the set goal');
+    assertEqual(set.run, 'spawn agents and build X', '/goal with text starts a turn');
+    assert(saves.length >= 1 && saves[saves.length - 1].goal === 'spawn agents and build X', '/goal persists with the session');
+
+    const got = executeCommand('/goal', goalState);
+    assertIncludes(got.response, 'spawn agents and build X', '/goal with no args prints current');
+
+    const cleared = executeCommand('/goal clear', goalState);
+    assertEqual(goalState.goal, '', '/goal clear empties goal');
+    assertIncludes(cleared.response, 'cleared', '/goal clear confirms');
+    assert(isGoalActive(goalState) === false, 'cleared goal is inactive');
+
+    executeCommand('/goal keep going', goalState);
+    const clearedFlag = executeCommand('/goal --clear', goalState);
+    assertEqual(goalState.goal, '', '/goal --clear empties goal');
+    assertIncludes(clearedFlag.response, 'cleared', '/goal --clear confirms');
+
+    const contText = goalContinuationMessage('spawn agents and build X');
+    assertIncludes(contText, 'still active: spawn agents and build X', 'continuation names the goal');
+    assert(!/\b(?:RUN|WRITE|DONE|NUDGE)\s*:/.test(contText), 'continuation has no grokui parser directives');
+
+    function endTurnResponse(text = 'What would you like to do?') {
+        return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({
+                content: [{ type: 'text', text }],
+                stop_reason: 'end_turn',
+                usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            text: async () => '',
+        };
+    }
+
+    const origFetch = globalThis.fetch;
+    let apiCalls = 0;
+    globalThis.fetch = async () => {
+        apiCalls += 1;
+        return endTurnResponse();
+    };
+
+    try {
+        const hooks = new HookEngine({});
+        const loop = createAgentLoop({
+            model: 'zoo-sonnet',
+            tools: { list() { return []; }, async call() { return ''; } },
+            permissions: { async check() { return true; } },
+            settings: { stream: false, maxTurns: 3 },
+            hooks,
+        });
+        loop.state.goal = 'spawn agents and build X';
+
+        const events = [];
+        for await (const ev of loop.run('start the work')) {
+            events.push(ev);
+        }
+
+        const userMsgs = loop.state.messages.filter(m => m.role === 'user');
+        const continuation = userMsgs.find(m => typeof m.content === 'string' && m.content.includes('still active:'));
+        assert(continuation, 'preventStop injects a continuation user message');
+        assertEqual(continuation.role, 'user', 'continuation is a user message, not assistant');
+        assertIncludes(continuation.content, 'spawn agents and build X', 'continuation repeats the active goal');
+        assert(!/\b(?:RUN|WRITE|DONE|NUDGE)\s*:/.test(continuation.content), 'injected message has no grokui directives');
+        assert(apiCalls > 1, 'goal keeps the loop going past the first no-tool end_turn');
+
+        const capHooks = new HookEngine({});
+        let capCalls = 0;
+        globalThis.fetch = async () => {
+            capCalls += 1;
+            return endTurnResponse();
+        };
+        const capLoop = createAgentLoop({
+            model: 'zoo-sonnet',
+            tools: { list() { return []; }, async call() { return ''; } },
+            permissions: { async check() { return true; } },
+            settings: { stream: false, maxTurns: 2 },
+            hooks: capHooks,
+        });
+        capLoop.state.goal = 'spawn agents and build X';
+        const capEvents = [];
+        for await (const ev of capLoop.run('keep going')) {
+            capEvents.push(ev);
+        }
+        const capStop = [...capEvents].reverse().find(e => e.type === 'stop');
+        const capErr = capEvents.find(e => e.type === 'error');
+        assertEqual(capStop?.reason, 'goal_max_turns', 'cap stops with goal_max_turns');
+        assertIncludes(capErr?.message || '', 'still set', 'cap reason says the goal is still set');
+        assertEqual(capLoop.state.goal, 'spawn agents and build X', 'cap leaves the goal set');
+        assert(capCalls <= 3, `cap bounds API calls, got ${capCalls}`);
+        assert(isGoalActive(capLoop.state), 'goal remains active after cap');
+    } finally {
+        globalThis.fetch = origFetch;
+    }
 }
 
 // ---------- Summary ----------

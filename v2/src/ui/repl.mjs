@@ -62,36 +62,17 @@ export async function startRepl(loop, settings) {
                     }
                 }
 
-                const { response, exit } = executeCommand(trimmed, loop.state);
+                const { response, exit, run } = executeCommand(trimmed, loop.state);
                 if (exit) { rl.close(); return; }
                 console.log(response);
+                if (run) {
+                    await driveLoop(loop, run, settings);
+                }
                 askPrompt();
                 return;
             }
 
-            // Run through agent loop
-            const spinner = new Spinner('Thinking...');
-            spinner.start();
-
-            try {
-                let firstEvent = true;
-                for await (const event of loop.run(trimmed)) {
-                    if (firstEvent) {
-                        spinner.stop();
-                        firstEvent = false;
-                    }
-                    renderEvent(event);
-                }
-                console.log('');
-
-                // Show status bar if enabled
-                if (settings.showTokenUsage !== false) {
-                    process.stderr.write(renderStatusBar(loop.state) + '\n');
-                }
-            } catch (err) {
-                spinner.stop();
-                console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
-            }
+            await driveLoop(loop, trimmed, settings);
 
             askPrompt();
         });
@@ -102,6 +83,30 @@ export async function startRepl(loop, settings) {
     return new Promise((resolve) => {
         rl.on('close', resolve);
     });
+}
+
+async function driveLoop(loop, prompt, settings) {
+    const spinner = new Spinner('Thinking...');
+    spinner.start();
+
+    try {
+        let firstEvent = true;
+        for await (const event of loop.run(prompt)) {
+            if (firstEvent) {
+                spinner.stop();
+                firstEvent = false;
+            }
+            renderEvent(event);
+        }
+        console.log('');
+
+        if (settings.showTokenUsage !== false) {
+            process.stderr.write(renderStatusBar(loop.state) + '\n');
+        }
+    } catch (err) {
+        spinner.stop();
+        console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
+    }
 }
 
 /**

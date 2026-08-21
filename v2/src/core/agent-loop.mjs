@@ -18,6 +18,7 @@ import {
     ZOO_LOCAL_BASE,
 } from './openzoo.mjs';
 import { persistUserTurn, ToolRepeatGuard, isHarnessUserText, rewriteFindCommand, rejectHarnessBash } from './savings.mjs';
+import { goalContinuationCap, goalContinuationMessage, isGoalActive } from './goal.mjs';
 
 /** Maximum number of consecutive tool-use continuation turns before aborting. */
 const MAX_TOOL_RECURSION_DEPTH = 50;
@@ -44,6 +45,8 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
         tokenUsage: { input: 0, output: 0 },
         model,
         tools,
+        goal: '',
+        _goalContinuations: 0,
         _contextManager: contextManager,
         _cascade: cascade,
         _sessionManager: sessionManager,
@@ -284,14 +287,33 @@ export function createAgentLoop({ model, tools, permissions, settings, hooks, ca
             return;
         }
 
-        // No tool calls — check stop hooks
-        if (hooks) {
-            const allowStop = await hooks.runStop();
-            if (!allowStop) {
-                // Continue via tools — never inject NUDGE / RUN:/WRITE: harness text.
-                yield* run(null, { continuation: true, _depth: depth + 1 });
-                return;
+        // No tool calls — check stop hooks. An active goal always preventStops.
+        const allowStop = hooks
+            ? await hooks.runStop(state)
+            : !isGoalActive(state);
+        if (!allowStop) {
+            if (isGoalActive(state)) {
+                const cap = goalContinuationCap(settings);
+                const next = (state._goalContinuations || 0) + 1;
+                if (next > cap) {
+                    yield {
+                        type: 'error',
+                        message: `Goal continuation cap (${cap}) reached. The goal is still set: ${state.goal}`,
+                    };
+                    yield { type: 'stop', reason: 'goal_max_turns', goal: state.goal };
+                    return;
+                }
+                state._goalContinuations = next;
+                // Continuation must be a user message — another assistant turn
+                // would immediately end_turn again. Never inject grokui directives.
+                state.messages.push({
+                    role: 'user',
+                    content: goalContinuationMessage(state.goal),
+                });
+                if (sessionManager) persistUserTurn(sessionManager, state);
             }
+            yield* run(null, { continuation: true, _depth: depth + 1 });
+            return;
         }
 
         // Task completed normally — record a successful outcome (opt-in).
