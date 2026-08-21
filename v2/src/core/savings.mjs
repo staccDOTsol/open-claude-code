@@ -76,7 +76,7 @@ export class ToolRepeatGuard {
     }
 
     check(name, input) {
-        if (name !== 'Bash' && name !== 'Grep') return { skip: false };
+        if (name !== 'Bash' && name !== 'Grep' && name !== 'Agent') return { skip: false };
         const k = this.key(name, input);
         const prev = this._log.get(k);
         if (!prev) return { skip: false };
@@ -85,6 +85,13 @@ export class ToolRepeatGuard {
             return {
                 skip: true,
                 message: `Skipped repeat ${name} — already succeeded.\n${prev.result || ''}`.trim(),
+            };
+        }
+        // Agent missing-prompt (or any hard fail): one error, then skip. Do not loop.
+        if (name === 'Agent') {
+            return {
+                skip: true,
+                message: `Skipped repeat Agent — identical call already failed. Pass prompt (string).`,
             };
         }
         if (prev.count >= this.maxIdentical) {
@@ -107,7 +114,7 @@ export class ToolRepeatGuard {
         const k = this.key(name, input);
         const prev = this._log.get(k) || { count: 0, ok: false, result: '' };
         const text = typeof result === 'string' ? result : JSON.stringify(result);
-        const hardFail = /^(Error:|Exit code: [1-9])/m.test(text);
+        const hardFail = /^(Error:|Exit code: [1-9]|Validation error:)/m.test(text);
         const ok = !hardFail;
         this._log.set(k, { count: prev.count + 1, ok, result: text });
         if (name === 'Bash' && ok) {

@@ -22,6 +22,7 @@ import { SkillsLoader } from '../src/skills/loader.mjs';
 import { SkillRunner } from '../src/skills/runner.mjs';
 import { COMMANDS, executeCommand, getCompletions } from '../src/ui/commands.mjs';
 import { goalContinuationMessage, isGoalActive } from '../src/core/goal.mjs';
+import { AGENT_MISSING_PROMPT, coerceAgentPrompt } from '../src/tools/agent.mjs';
 import { Spinner, highlightCode, renderToolProgress, renderStatusBar, renderError } from '../src/ui/ink-app.mjs';
 import { loadSettings, SETTINGS_SCHEMA } from '../src/config/settings.mjs';
 import { readEnv, getEnv, listEnvVars, ENV_SCHEMA } from '../src/config/env.mjs';
@@ -1137,6 +1138,68 @@ assert(agentTool.inputSchema.properties.subagent_type !== undefined, 'Agent has 
 assert(agentTool.inputSchema.properties.model !== undefined, 'Agent has model override');
 assert(agentTool.inputSchema.properties.run_in_background !== undefined, 'Agent has run_in_background');
 assert(agentTool.inputSchema.properties.isolation !== undefined, 'Agent has isolation option');
+assert(agentTool.inputSchema.required.includes('prompt'), 'Agent schema still requires prompt');
+assertIncludes(agentTool.inputSchema.properties.prompt.description, 'Required string', 'Agent schema says prompt is required string');
+
+assertEqual(coerceAgentPrompt({ description: 'x' }), 'x', 'description aliases to prompt');
+assertEqual(coerceAgentPrompt({ task: 'do it' }), 'do it', 'task aliases to prompt');
+assertEqual(coerceAgentPrompt({ goal: 'ship it' }), 'ship it', 'goal aliases to prompt');
+assertEqual(coerceAgentPrompt({ message: 'hi' }), 'hi', 'message aliases to prompt');
+assertEqual(coerceAgentPrompt({ instructions: 'build' }), 'build', 'instructions aliases to prompt');
+assertEqual(coerceAgentPrompt({ prompt: 'keep', description: 'ignore' }), 'keep', 'explicit prompt wins');
+assertEqual(coerceAgentPrompt({ subagent_type: 'coder' }), '', 'subagent_type alone is not a prompt');
+
+const descInput = { description: 'x' };
+assertEqual(agentTool.validateInput(descInput).length, 0, 'description alias passes validate');
+assertEqual(descInput.prompt, 'x', 'validate writes coerced prompt');
+
+const typeOnly = agentTool.validateInput({ subagent_type: 'coder' });
+assert(typeOnly.length === 1, 'subagent_type-only is one error, not a loop');
+assertIncludes(typeOnly[0], 'prompt (string)', 'missing prompt names prompt (string)');
+assertIncludes(typeOnly[0], AGENT_MISSING_PROMPT.split('—')[0].trim(), 'missing prompt is the clear Agent error');
+
+const typeOnlyCall = await registry.call('Agent', { subagent_type: 'coder' });
+assertIncludes(typeOnlyCall, 'Validation error', 'subagent_type-only is a tool error');
+assertIncludes(typeOnlyCall, 'prompt (string)', 'tool error tells the model to pass prompt');
+assert(!typeOnlyCall.includes('Subagent'), 'missing prompt does not start a subagent');
+
+{
+    const { ToolRepeatGuard } = await import('../src/core/savings.mjs');
+    const guard = new ToolRepeatGuard();
+    const bad = { subagent_type: 'coder' };
+    guard.record('Agent', bad, typeOnlyCall);
+    const skip = guard.check('Agent', bad);
+    assert(skip.skip, 'identical Agent fail is skipped — no fail loop');
+    assertIncludes(skip.message, 'prompt (string)', 'skip tells the model to pass prompt');
+}
+
+{
+    const origFetch = globalThis.fetch;
+    const bodies = [];
+    globalThis.fetch = async (_url, init) => {
+        bodies.push(JSON.parse(init.body));
+        return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({
+                content: [{ type: 'text', text: 'subagent done' }],
+                stop_reason: 'end_turn',
+                usage: {},
+            }),
+            text: async () => '',
+        };
+    };
+    try {
+        const out = await registry.call('Agent', { description: 'x' });
+        assert(!out.includes('Validation error'), 'description alias is not a validation error');
+        assert(bodies.length >= 1, 'Agent({ description: x }) starts a subagent');
+        const firstUser = bodies[0].messages?.find(m => m.role === 'user');
+        assertIncludes(String(firstUser?.content || ''), 'x', 'description x is used as the prompt');
+    } finally {
+        globalThis.fetch = origFetch;
+    }
+}
 
 // ---------- Phase 2: Streaming & Context Tests ----------
 

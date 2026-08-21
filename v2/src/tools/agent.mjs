@@ -6,21 +6,70 @@
  * - isolation: "worktree" option
  * - run_in_background option
  * - model override
+ * - prompt aliases (description/task/goal/message/instructions)
  */
 
 import { createAgentLoop } from '../core/agent-loop.mjs';
 import { createToolRegistry } from './registry.mjs';
 import { createPermissionChecker } from '../permissions/checker.mjs';
 
+/** Cheap models often send these instead of `prompt`. */
+export const AGENT_PROMPT_ALIASES = ['description', 'task', 'goal', 'message', 'instructions'];
+
+export const AGENT_MISSING_PROMPT =
+    'pass prompt (string) — Agent needs a task. You can also set description, task, goal, message, or instructions.';
+
+/**
+ * Resolve a task string from prompt or its aliases. Mutates input.prompt when found.
+ * @param {object} input
+ * @returns {string}
+ */
+export function coerceAgentPrompt(input) {
+    if (!input || typeof input !== 'object') return '';
+    const direct = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+    if (direct) {
+        input.prompt = direct;
+        return direct;
+    }
+    for (const key of AGENT_PROMPT_ALIASES) {
+        const val = input[key];
+        if (typeof val === 'string' && val.trim()) {
+            input.prompt = val.trim();
+            return input.prompt;
+        }
+    }
+    return '';
+}
+
 export const AgentTool = {
     name: 'Agent',
-    description: 'Spawn a subagent to handle a task. The subagent has its own context and tools.',
+    description: 'Spawn a subagent to handle a task. The subagent has its own context and tools. Required: prompt (string). Aliases: description, task, goal, message, instructions.',
     inputSchema: {
         type: 'object',
         properties: {
             prompt: {
                 type: 'string',
-                description: 'The task for the subagent to perform',
+                description: 'Required string. The task for the subagent to perform. Aliases accepted: description, task, goal, message, instructions.',
+            },
+            description: {
+                type: 'string',
+                description: 'Alias for prompt',
+            },
+            task: {
+                type: 'string',
+                description: 'Alias for prompt',
+            },
+            goal: {
+                type: 'string',
+                description: 'Alias for prompt',
+            },
+            message: {
+                type: 'string',
+                description: 'Alias for prompt',
+            },
+            instructions: {
+                type: 'string',
+                description: 'Alias for prompt',
             },
             allowed_tools: {
                 type: 'array',
@@ -49,9 +98,8 @@ export const AgentTool = {
     },
 
     validateInput(input) {
-        const errors = [];
-        if (!input.prompt) errors.push('prompt is required');
-        return errors;
+        if (coerceAgentPrompt(input)) return [];
+        return [AGENT_MISSING_PROMPT];
     },
 
     // Track background subagents
@@ -59,6 +107,11 @@ export const AgentTool = {
     _nextBgId: 0,
 
     async call(input) {
+        const prompt = coerceAgentPrompt(input);
+        if (!prompt) {
+            return `Error: ${AGENT_MISSING_PROMPT}`;
+        }
+
         const model = input.model || process.env.SUBAGENT_MODEL || 'claude-sonnet-4-6';
         const tools = createToolRegistry();
         const permissions = createPermissionChecker({ defaultMode: 'bypassPermissions' });
