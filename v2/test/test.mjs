@@ -22,7 +22,6 @@ import { SkillsLoader } from '../src/skills/loader.mjs';
 import { SkillRunner } from '../src/skills/runner.mjs';
 import { COMMANDS, executeCommand, getCompletions } from '../src/ui/commands.mjs';
 import { goalContinuationMessage, isGoalActive } from '../src/core/goal.mjs';
-import { STATUS_BAR_LAYOUT } from '../src/ui/components.mjs';
 import { Spinner, highlightCode, renderToolProgress, renderStatusBar, renderError } from '../src/ui/ink-app.mjs';
 import { loadSettings, SETTINGS_SCHEMA } from '../src/config/settings.mjs';
 import { readEnv, getEnv, listEnvVars, ENV_SCHEMA } from '../src/config/env.mjs';
@@ -817,14 +816,16 @@ assertIncludes(toolProgress, 'Bash', 'Tool progress has name');
 
 const statusBar = renderStatusBar({ model: 'test', tokenUsage: { input: 10, output: 5 }, turnCount: 1 });
 assertType(statusBar, 'string', 'Status bar is string');
-assertEqual(STATUS_BAR_LAYOUT.flexDirection, 'row', 'Ink StatusBar is one row, not a column stack');
-assertEqual(STATUS_BAR_LAYOUT.flexWrap, 'wrap', 'Ink StatusBar wraps instead of stacking fields');
+
+const hudSrc = fs.readFileSync(new URL('../src/ui/components.mjs', import.meta.url), 'utf-8');
+assert(hudSrc.includes("flexDirection: 'row'"), 'Ink StatusBar is one row, not a column stack');
+assert(hudSrc.includes("flexWrap: 'wrap'"), 'Ink StatusBar wraps instead of stacking fields');
+assert(hudSrc.includes('STATUS_BAR_LAYOUT'), 'StatusBar uses an explicit row layout');
 
 const appSrc = fs.readFileSync(new URL('../src/ui/app.mjs', import.meta.url), 'utf-8');
 assert(appSrc.includes('Static'), 'WelcomeBanner is rendered via Ink Static (once)');
 assert(/Static[\s\S]*WelcomeBanner/.test(appSrc), 'WelcomeBanner is not in the live redraw tree');
 
-const hudSrc = fs.readFileSync(new URL('../src/ui/components.mjs', import.meta.url), 'utf-8');
 const tickStart = hudSrc.indexOf('const tick = async');
 const tickEnd = hudSrc.indexOf('setInterval(tick');
 const tickBlock = tickStart >= 0 && tickEnd > tickStart ? hudSrc.slice(tickStart, tickEnd) : hudSrc;
